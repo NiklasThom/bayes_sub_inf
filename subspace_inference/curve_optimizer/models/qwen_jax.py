@@ -423,9 +423,8 @@ class QwenTextClassificationWrapper:
             return last_token_logits  # Return probabilities for target classes only
 
 
-# Utility functions for testing
 
-
+# Functions for converting PyTorch Qwen2.5 models to JAX/Flax and saving/loading / needs torch package
 def create_qwen_config_from_pytorch(pytorch_config):
     """Convert PyTorch config to JAX model parameters"""
     return {
