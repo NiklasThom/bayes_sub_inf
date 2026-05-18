@@ -18,7 +18,7 @@ import matplotlib.pyplot as plt
 from flax.core import freeze
 
 from jax_tqdm import scan_tqdm
-from src.utils import (
+from subspace_inference.curve_optimizer.utils import (
     calibration_error as ece_fn,
     post_pred_performance,
     bezier_length,
@@ -30,8 +30,10 @@ from src.utils import (
 )
 
 # Project imports
-from src.qwen_jax import QwenTextClassificationWrapper
-from src.subspace_curve import (
+from subspace_inference.curve_optimizer.models.qwen_jax import (
+    QwenTextClassificationWrapper,
+)
+from subspace_inference.curve_optimizer.subspace_curve import (
     SubspaceBaseModel,
     masked_pytree_to_matrix,
     filter_mask,
@@ -166,9 +168,9 @@ class TrainHyperparams:
         # Compute num_epochs / num_steps from data size
         num_epochs_cfg = th.get("num_epochs", -1)
         num_steps_cfg = th.get("num_steps", -1)
-        assert not (
-            (num_epochs_cfg > 0) and (num_steps_cfg > 0)
-        ), "Only one of num_epochs or num_steps should be > 0"
+        assert not ((num_epochs_cfg > 0) and (num_steps_cfg > 0)), (
+            "Only one of num_epochs or num_steps should be > 0"
+        )
         has_train_data = num_epochs_cfg > 0 or num_steps_cfg > 0
         if has_train_data:
             assert data.train_input_ids is not None
@@ -1409,9 +1411,9 @@ def _init_subspace_params(
     if fixed_cps_train_params is not False:
         assert isinstance(fixed_cps_train_params, list)
         k = s_model.k
-        assert len(fixed_cps_train_params) == (
-            k + 1
-        ), "fixed_cps_train_params length must match k or be False"
+        assert len(fixed_cps_train_params) == (k + 1), (
+            "fixed_cps_train_params length must match k or be False"
+        )
         for i, p in enumerate(fixed_cps_train_params):
             if p is not False:
 

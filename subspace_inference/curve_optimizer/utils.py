@@ -5,7 +5,7 @@ import jax
 
 def bezier_length(cp):
     """Compute arc length of a Bézier curve defined by control points *cp*."""
-    from src.subspace_curve import bezier_coeff_fn
+    from subspace_inference.curve_optimizer.subspace_curve import bezier_coeff_fn
 
     k = cp.shape[0] - 1
     t = jnp.linspace(0, 1, 1000)
@@ -44,7 +44,7 @@ def bezier_gyration(cp):
 
 def bezier_mean_curvature(cp):
     """Integrated mean curvature of the Bézier curve defined by *cp*."""
-    from src.subspace_curve import bezier_curve
+    from subspace_inference.curve_optimizer.subspace_curve import bezier_curve
 
     tt = jnp.linspace(0, 1, 10)
     _, d_bezier = bezier_curve(cp.shape[0], cp)
@@ -161,9 +161,9 @@ def post_pred_performance(
 def load_fn(m, p, pl):
     """Merge a loaded parameter into the current pytree leaf based on the train mask."""
     if m:
-        assert (
-            p.shape == pl.shape
-        ), f"Shape mismatch: current {p.shape} vs loaded {pl.shape}"
+        assert p.shape == pl.shape, (
+            f"Shape mismatch: current {p.shape} vs loaded {pl.shape}"
+        )
         return pl
     return p
 
@@ -180,7 +180,7 @@ def load_checkpoint_new(run, params, s_model):
         params, bma_weights, trainable_params, init_trainable_params,
         pretrained_params, last_trainable_params
     """
-    from src.subspace_curve import LoraAbstractParams
+    from subspace_inference.curve_optimizer.subspace_curve import LoraAbstractParams
 
     def load_art(load_run):
         artifact_use, artifact_weights_use = False, False
@@ -228,9 +228,9 @@ def load_checkpoint_new(run, params, s_model):
             )
             print(f"Loaded pretrained_params from {f.name}")
 
-    assert (
-        trainable_params
-    ), f"trainable_params not found in artifact {artifact_use.name}"
+    assert trainable_params, (
+        f"trainable_params not found in artifact {artifact_use.name}"
+    )
 
     try:
         params["params"] = jax.tree.map(
