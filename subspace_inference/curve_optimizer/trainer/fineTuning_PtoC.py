@@ -48,6 +48,7 @@ from subspace_inference.curve_optimizer.subspace_curve import (
     JensenShannonNoiseSamplingDropoutMixin,
     LoRAMixin,
 )
+from subspace_inference.curve_optimizer.models import get_model_class
 from scipy.cluster import hierarchy
 from scipy.spatial.distance import squareform
 from dataclasses import dataclass, field, replace
@@ -714,7 +715,7 @@ def _pad_to_batch(x, y, batch_size):
 
 
 def setup_metrics(
-    model,
+    s_model,
     batch_size,
     x,
     y,
@@ -727,7 +728,7 @@ def setup_metrics(
     t_max=None,
 ):
     if t_max is None:
-        t_max = getattr(model, "t_max", 1.0)
+        t_max = getattr(s_model, "t_max", 1.0)
 
     x_pad, y_pad, n_valid = _pad_to_batch(x, y, batch_size)
     n_total = len(jax.tree.leaves(x_pad)[0])
@@ -762,7 +763,7 @@ def setup_metrics(
 
             def single_pred(key, t):
                 key, subkey = random.split(key)
-                out, _ = model(
+                out, _ = s_model(
                     params["params"],
                     {},
                     t,
@@ -785,8 +786,8 @@ def setup_metrics(
         rng_key, out = _eval_core(rng_key, params, n_samples)
         # out: (n_samples, n_valid, output_dim)
 
-        # Delegate evaluation to the underlying model wrapper
-        metrics = model.model.evaluate(out, y, key_prefix=key_prefix, average=average)
+        # Delegate evaluation to the subspace model
+        metrics = s_model.evaluate(out, y, key_prefix=key_prefix, average=average)
         return metrics, out
 
     return acc_fn
@@ -974,7 +975,7 @@ def run_evaluation(
         test_x, test_y = data.get("test")
         print("Evaluating test set (k=0)")
         _, logits = _logits(test_x, test_y, n_samples=1, key_prefix="test_")
-        pp = s_model.model.evaluate(logits, test_y)
+        pp = s_model.evaluate(logits, test_y)
         logger.summary.update({f"{logger_prefix}test_{mk}": v for mk, v in pp.items()})
         logger.summary.update(
             {f"{logger_prefix}test_entropy": entropy(logits.astype(jnp.float32)).mean()}
@@ -1011,21 +1012,22 @@ def run_evaluation(
                 key_prefix="train_ppd_",
             )
 
-            train_pp = s_model.model.evaluate(
+            train_pp = s_model.evaluate(
                 train_logits, train_y, key_prefix="train_ppd_uniform_"
             )
             logger.summary.update(train_pp)
 
-            # Plot train curve
-            fig = _plot_curve_along_t(
-                t_space,
-                train_metrics["train_ppd_mean_loss"],
-                train_metrics["train_ppd_mean_acc"],
-                train_metrics["train_ppd_mean_ece"],
-                title="Curve @ Train",
-            )
-            logger.log({"Curve Predictive Train": wandb.Image(fig)})
-            plt.close(fig)
+            # Plot train curve (only for classification tasks)
+            if "train_ppd_mean_ece" in train_metrics:
+                fig = _plot_curve_along_t(
+                    t_space,
+                    train_metrics["train_ppd_mean_loss"],
+                    train_metrics["train_ppd_mean_acc"],
+                    train_metrics["train_ppd_mean_ece"],
+                    title="Curve @ Train",
+                )
+                logger.log({"Curve Predictive Train": wandb.Image(fig)})
+                plt.close(fig)
 
             if art_logits is not None:
                 # Save train logits artifact
@@ -1054,20 +1056,19 @@ def run_evaluation(
                 key_prefix="val_ppd_",
             )
 
-            val_pp = s_model.model.evaluate(
-                val_logits, val_y, key_prefix="val_ppd_uniform_"
-            )
+            val_pp = s_model.evaluate(val_logits, val_y, key_prefix="val_ppd_uniform_")
             logger.summary.update(val_pp)
-            # Plot val curve
-            fig = _plot_curve_along_t(
-                t_space,
-                val_metrics["val_ppd_mean_loss"],
-                val_metrics["val_ppd_mean_acc"],
-                val_metrics["val_ppd_mean_ece"],
-                title="Curve @ Validation",
-            )
-            logger.log({"Curve Predictive Val": wandb.Image(fig)})
-            plt.close(fig)
+            # Plot val curve (only for classification tasks)
+            if "val_ppd_mean_ece" in val_metrics:
+                fig = _plot_curve_along_t(
+                    t_space,
+                    val_metrics["val_ppd_mean_loss"],
+                    val_metrics["val_ppd_mean_acc"],
+                    val_metrics["val_ppd_mean_ece"],
+                    title="Curve @ Validation",
+                )
+                logger.log({"Curve Predictive Val": wandb.Image(fig)})
+                plt.close(fig)
 
             if art_logits is not None:
                 # Save val logits artifact
@@ -1146,19 +1147,21 @@ def run_evaluation(
 
     # -- Plot test performance along curve (not per_leave) --
     if use_linspace:
-        fig = _plot_curve_along_t(
-            t_space,
-            test_metrics[key_prefix + "mean_loss"],
-            test_metrics[key_prefix + "mean_acc"],
-            test_metrics[key_prefix + "mean_ece"],
-            title="Final testset",
-        )
-        logger.log({"Curve Predictive": wandb.Image(fig)})
-        plt.close(fig)
+        # Only plot for classification tasks (which have mean_ece)
+        if key_prefix + "mean_ece" in test_metrics:
+            fig = _plot_curve_along_t(
+                t_space,
+                test_metrics[key_prefix + "mean_loss"],
+                test_metrics[key_prefix + "mean_acc"],
+                test_metrics[key_prefix + "mean_ece"],
+                title="Final testset",
+            )
+            logger.log({"Curve Predictive": wandb.Image(fig)})
+            plt.close(fig)
 
     # -- Report test performance --
     # Always log uniform-BMA test metrics
-    pp = s_model.model.evaluate(test_logits, test_y, key_prefix=key_prefix + "uniform_")
+    pp = s_model.evaluate(test_logits, test_y, key_prefix=key_prefix + "uniform_")
     logger.summary.update(pp)
 
     # Uncertainty metrics (always for k > 0)
@@ -1184,7 +1187,7 @@ def run_evaluation(
 
         # if isinstance(best_weight, jnp.ndarray):
         # Best temperature was found on val — use it
-        pp_w = s_model.model.evaluate(
+        pp_w = s_model.evaluate(
             test_logits, test_y, weights=best_weight, key_prefix=key_prefix
         )
         logger.summary.update(pp_w)
@@ -1204,7 +1207,7 @@ def run_evaluation(
         test_x, test_y = data.get("test")
         print("Evaluating test set (k=0)")
         _, logits = _logits(test_x, test_y, n_samples=1, key_prefix="test_")
-        pp = s_model.model.evaluate(logits, test_y, key_prefix="test_")
+        pp = s_model.evaluate(logits, test_y, key_prefix="test_")
         logger.summary.update(pp)
         logger.summary.update(
             {f"{logger_prefix}test_entropy": entropy(logits.astype(jnp.float32)).mean()}
@@ -1241,7 +1244,7 @@ def run_evaluation(
                 key_prefix="train_ppd_",
             )
 
-            train_pp = s_model.model.evaluate(
+            train_pp = s_model.evaluate(
                 train_logits, train_y, key_prefix="train_ppd_uniform_"
             )
 
@@ -1283,20 +1286,19 @@ def run_evaluation(
                 key_prefix="val_ppd_",
             )
 
-            val_pp = s_model.model.evaluate(
-                val_logits, val_y, key_prefix="val_ppd_uniform_"
-            )
+            val_pp = s_model.evaluate(val_logits, val_y, key_prefix="val_ppd_uniform_")
             logger.summary.update(val_pp)
-            # Plot val curve
-            fig = _plot_curve_along_t(
-                t_space,
-                val_metrics["val_ppd_mean_loss"],
-                val_metrics["val_ppd_mean_acc"],
-                val_metrics["val_ppd_mean_ece"],
-                title="Curve @ Validation",
-            )
-            logger.log({"Curve Predictive Val": wandb.Image(fig)})
-            plt.close(fig)
+            # Plot val curve (only for classification tasks)
+            if "val_ppd_mean_ece" in val_metrics:
+                fig = _plot_curve_along_t(
+                    t_space,
+                    val_metrics["val_ppd_mean_loss"],
+                    val_metrics["val_ppd_mean_acc"],
+                    val_metrics["val_ppd_mean_ece"],
+                    title="Curve @ Validation",
+                )
+                logger.log({"Curve Predictive Val": wandb.Image(fig)})
+                plt.close(fig)
 
             if art_logits is not None:
                 # Save val logits artifact
@@ -1397,19 +1399,21 @@ def run_evaluation(
 
     # -- Plot test performance along curve (not per_leave) --
     if use_linspace:
-        fig = _plot_curve_along_t(
-            t_space,
-            test_metrics[key_prefix + "mean_loss"],
-            test_metrics[key_prefix + "mean_acc"],
-            test_metrics[key_prefix + "mean_ece"],
-            title="Final testset",
-        )
-        logger.log({"Curve Predictive": wandb.Image(fig)})
-        plt.close(fig)
+        # Only plot for classification tasks (which have mean_ece)
+        if key_prefix + "mean_ece" in test_metrics:
+            fig = _plot_curve_along_t(
+                t_space,
+                test_metrics[key_prefix + "mean_loss"],
+                test_metrics[key_prefix + "mean_acc"],
+                test_metrics[key_prefix + "mean_ece"],
+                title="Final testset",
+            )
+            logger.log({"Curve Predictive": wandb.Image(fig)})
+            plt.close(fig)
 
     # -- Report test performance --
     # Always log uniform-BMA test metrics
-    pp = s_model.model.evaluate(test_logits, test_y, key_prefix=key_prefix + "uniform_")
+    pp = s_model.evaluate(test_logits, test_y, key_prefix=key_prefix + "uniform_")
     logger.summary.update(pp)
 
     # Uncertainty metrics (always for k > 0)
@@ -1435,7 +1439,7 @@ def run_evaluation(
 
         # if isinstance(best_weight, jnp.ndarray):
         # Best temperature was found on val — use it
-        pp_w = s_model.model.evaluate(
+        pp_w = s_model.evaluate(
             test_logits, test_y, weights=best_weight, key_prefix=key_prefix
         )
         logger.summary.update(pp_w)
@@ -1811,9 +1815,7 @@ def get_embedding(input_ids, attention_mask, model, params, batch_size=11):
     return embedding
 
 
-def _compute_expert_embeddings(
-    model: QwenTextClassificationWrapper, data, config: "Config"
-):
+def _compute_expert_embeddings(model, data, config: "Config"):
     """Compute cosine-similarity matrix for expert sorting.
 
     Callers must already guard on ``ds_sampling == 'expert'`` and a
@@ -2018,7 +2020,12 @@ def _setup_training_env(
     """
     mp = config.model_params
 
-    model = QwenTextClassificationWrapper(**config.net_kwargs)
+    # Generic model instantiation
+    model_type = config.net_kwargs.get("model_type", "qwen")
+    model_class = get_model_class(model_type)
+    # Remove model_type from kwargs before passing to constructor
+    model_kwargs = {k: v for k, v in config.net_kwargs.items() if k != "model_type"}
+    model = model_class(**model_kwargs)
     # Instantiate the subspace model
     logging.info("Using subspace model: %s", mp.subspace_model)
     s_model_cls = get_subspace_model(mp.subspace_model)
@@ -2359,7 +2366,7 @@ def _pretrain_fixed_cps(rng_key, config: "Config", data, logger, artifact):
                 train_params.append(False)
     # print DE performance of pretrained CPs
     df_logits = jnp.concat(de_logits, axis=0)
-    metrics = s_model.model.evaluate(df_logits, data.test_y, key_prefix="test_DE_")
+    metrics = s_model.evaluate(df_logits, data.test_y, key_prefix="test_DE_")
     logger.summary.update(metrics)
 
     # Uncertainty metrics for DE
@@ -2523,7 +2530,11 @@ def train(logger, config_dict):
 
     # sort data for expert sampling, if needed
     if config.train_hyper.ds_sampling == "expert":
-        base_model = QwenTextClassificationWrapper(**config.net_kwargs)
+        # Generic model instantiation for expert sorting
+        model_type = config.net_kwargs.get("model_type", "qwen")
+        model_class = get_model_class(model_type)
+        model_kwargs = {k: v for k, v in config.net_kwargs.items() if k != "model_type"}
+        base_model = model_class(**model_kwargs)
         train_x, train_y = _sort_data_for_expert(rng_key, data, config, base_model)
         data = replace(
             data,
@@ -2603,9 +2614,12 @@ if __name__ == "__main__":
                 # "dataset_path": WANDB_PATH + "/obqa_dataset:v0",
                 "val_percentage": 0.1,
             },
-            # --- Base model (QwenTextClassificationWrapper) ------------------------
+            # --- Base model --------------------------------------------------------------
             # 'target_token_ids' is injected automatically after dataset load
-            "net_kwargs": {"model_path": "artifacts/qwen2.5_0.5B_bfloat16:v0"},
+            "net_kwargs": {
+                "model_type": "qwen",
+                "model_path": "artifacts/qwen2.5_0.5B_bfloat16:v0",
+            },
             # 'net_kwargs': {'model_path': WANDB_PATH + "/qwen2.5_7B_bfloat16:v0"},
             # --- Training hyperparameters → TrainHyperparams ----------------------
             # These control *how* training runs, not *what* is built.
