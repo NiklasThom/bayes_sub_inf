@@ -7,7 +7,6 @@ from functools import partial
 from jax import custom_jvp
 from typing import Callable, Tuple, Any
 from numpyro import distributions as dist
-from jaxopt import Bisection
 from jax.scipy.special import gammaln
 
 # from src.weight_matching import PermutationSpec, apply_permutation, weight_matching
@@ -16,6 +15,10 @@ from flax.core import freeze, unfreeze
 from jax.tree_util import register_pytree_node_class
 import math
 import logging
+from subspace_inference.curve_optimizer.utils import (
+    post_pred_performance,
+    calibration_error,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -933,6 +936,43 @@ class CategorySubspace(SubspaceBaseModel):
         )
         return jnp.mean(nll), state, out
 
+    def evaluate(self, logits, y, key_prefix="", average=True, weights=None):
+        """Compute classification metrics from sampled logits.
+
+        Args:
+            logits: (n_samples, n_data, n_classes) - unnormalized logits
+            y: (n_data,) - integer labels
+            weights: (n_samples,) optional BMA weights
+            key_prefix: prefix for metric keys
+            average: if True, return averaged metrics; else return per-t-sample metrics
+
+        Returns:
+            dict with metrics (ll, acc, ece, brier, and optionally mean_* per-t-sample metrics)
+        """
+        # Use existing utils.post_pred_performance which handles BMA weighting
+        metrics = post_pred_performance(
+            logits, y, weights=weights, key_prefix=key_prefix, num_bins=15
+        )
+
+        # Add per-sample metrics if not averaging
+        if not average:
+            # Compute per-t-sample metrics
+            probs = jax.nn.softmax(logits, axis=-1)
+            confidences = jnp.max(probs, axis=-1)
+            predictions = jnp.argmax(probs, axis=-1)
+            acc_per_t = jnp.mean(predictions == y[None, :], axis=1)
+            loss_per_t = -jnp.mean(
+                jax.nn.log_softmax(logits, axis=-1)
+                * jax.nn.one_hot(y[None, :], logits.shape[-1]),
+                axis=-1,
+            )
+            metrics[f"{key_prefix}mean_acc"] = acc_per_t
+            metrics[f"{key_prefix}mean_loss"] = loss_per_t
+            # ECE per t-sample is complex, set to zeros for now
+            metrics[f"{key_prefix}mean_ece"] = jnp.zeros_like(acc_per_t)
+
+        return metrics
+
 
 @register_subspace_model("regression")
 class RegressionSubspace(SubspaceBaseModel):
@@ -976,6 +1016,45 @@ class RegressionSubspace(SubspaceBaseModel):
             y, loc=out.squeeze(axis=-1), scale=jnp.exp(self.log_scale) + 1e-8
         )
         return nll, state, out
+
+    def evaluate(self, logits, y, key_prefix="", average=True, weights=None):
+        """Compute regression metrics from sampled predictions.
+
+        Args:
+            logits: (n_samples, n_data, 1) - predictions
+            y: (n_data,) - continuous targets
+            weights: (n_samples,) optional BMA weights
+            key_prefix: prefix for metric keys
+            average: if True, return averaged metrics; else return per-t-sample metrics
+
+        Returns:
+            dict with metrics (mse, mae, loss, and optionally mean_* per-t-sample metrics)
+        """
+        # Ensemble prediction
+        if weights is not None:
+            ensemble_pred = jnp.sum(logits * weights[:, None, None], axis=0)
+        else:
+            ensemble_pred = jnp.mean(logits, axis=0)
+
+        mse = jnp.mean(jnp.square(ensemble_pred - y[:, None]))
+        mae = jnp.mean(jnp.abs(ensemble_pred - y[:, None]))
+
+        # Loss for BMA (use MSE as proxy for -log_prob)
+        loss = mse
+
+        metrics = {
+            f"{key_prefix}mse": mse,
+            f"{key_prefix}mae": mae,
+            f"{key_prefix}loss": loss,
+        }
+
+        if not average:
+            # Per-t-sample metrics
+            per_t_mse = jnp.mean(jnp.square(logits - y[None, :, None]), axis=1)
+            metrics[f"{key_prefix}mean_loss"] = per_t_mse
+            metrics[f"{key_prefix}mean_acc"] = -per_t_mse  # Proxy for compatibility
+
+        return metrics
 
 
 @register_subspace_model("dist_regression")
