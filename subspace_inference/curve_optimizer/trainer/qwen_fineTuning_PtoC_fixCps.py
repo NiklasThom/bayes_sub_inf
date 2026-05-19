@@ -59,8 +59,8 @@ from functools import partial
 # Set environment variables
 os.environ["XLA_FLAGS"] = "--xla_force_host_platform_device_count=10"
 # Central project prefix for artifacts/datasets
-WANDB_ENTITY = os.environ.get("WANDB_ENTITY", "ddold")
-WANDB_PROJECT = os.environ.get("WANDB_PROJECT", "qwen_PtoC")
+WANDB_ENTITY = os.environ.get("WANDB_ENTITY")
+WANDB_PROJECT = os.environ.get("WANDB_PROJECT", "curve_optimizer")
 WANDB_PATH = f"{WANDB_ENTITY}/{WANDB_PROJECT}"
 # import sys
 # sys.setrecursionlimit(200)
