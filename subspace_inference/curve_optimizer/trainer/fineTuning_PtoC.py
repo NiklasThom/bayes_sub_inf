@@ -66,6 +66,11 @@ WANDB_PATH = f"{WANDB_ENTITY}/{WANDB_PROJECT}"
 # sys.setrecursionlimit(200)
 
 
+from subspace_inference.curve_optimizer.models.qwen_jax import (
+    QwenTextClassificationWrapper,
+)
+
+
 @dataclass
 class DataSplits:
     """All dataset PyTrees for train / val / test splits.
@@ -110,6 +115,10 @@ def _empty_val_metric():
             "val_bma_acc": jnp.array(-jnp.inf, dtype=jnp.float32),
             "val_bma_ece": jnp.array(jnp.inf, dtype=jnp.float32),
             "val_bma_brier": jnp.array(jnp.inf, dtype=jnp.float32),
+            # Toy regression metrics
+            "val_loss": jnp.array(jnp.inf, dtype=jnp.float32),
+            "val_mse": jnp.array(jnp.inf, dtype=jnp.float32),
+            "val_mae": jnp.array(jnp.inf, dtype=jnp.float32),
         },
         None,
     )
@@ -145,6 +154,8 @@ class TrainHyperparams:
 
     @property
     def ds_sampling(self) -> str:
+        if not self.dataset_sampling:
+            return "minibatch"
         return list(self.dataset_sampling.keys())[0]
 
     @classmethod
@@ -168,13 +179,21 @@ class TrainHyperparams:
             assert data.train_x is not None
             # Assume first leaf of train_x PyTree gives the dataset size
             n_train = len(jax.tree.leaves(data.train_x)[0])
-            num_epochs = num_epochs_cfg
-            num_steps = num_steps_cfg
-            if num_steps > 0:
+            if num_steps_cfg > 0:
+                num_steps = num_steps_cfg
                 num_epochs = int(np.ceil(1.0 * num_steps * batch_size / n_train))
                 print(f"Setting num_epochs to {num_epochs} to match {num_steps} steps")
-            num_steps = int(np.ceil(1.0 * num_epochs * n_train / batch_size))
-            print(f"Setting num_steps to {num_steps} to match {num_epochs} epochs")
+            elif num_epochs_cfg > 0:
+                num_epochs = num_epochs_cfg
+                num_steps = int(np.floor(1.0 * num_epochs * n_train / batch_size))
+                # num_steps: 100, num_epochs: 2, n_train: 500, batch_size: 10
+                print(
+                    f"DEBUG from from_config_dict: n_train={n_train}, num_epochs={num_epochs}, num_steps={num_steps}"
+                )
+                print(f"Setting num_steps to {num_steps} to match {num_epochs} epochs")
+            else:
+                num_steps = 0
+                num_epochs = 0
         else:
             num_epochs = num_steps = 0
 
@@ -766,8 +785,8 @@ def setup_metrics(
         rng_key, out = _eval_core(rng_key, params, n_samples)
         # out: (n_samples, n_valid, output_dim)
 
-        # Delegate evaluation to the model wrapper
-        metrics = model.evaluate(out, y, key_prefix=key_prefix, average=average)
+        # Delegate evaluation to the underlying model wrapper
+        metrics = model.model.evaluate(out, y, key_prefix=key_prefix, average=average)
         return metrics, out
 
     return acc_fn
@@ -1477,7 +1496,7 @@ def _element_wise_mask(element_freeze_mask):
 
 
 def _init_subspace_params(
-    config: Config, s_model, init_key, fixed_cps_train_params: list | bool = False
+    config: Config, s_model, init_key, data, fixed_cps_train_params: list | bool = False
 ):
     """Initialize parameters on an existing subspace model.
 
@@ -1488,7 +1507,9 @@ def _init_subspace_params(
         params (dict, updated in-place)
     """
     lora_params = config.model_params.lora_params
-    params = s_model.model.init(None, None)  # base parameters loaded from file
+    params = s_model.model.init(
+        init_key, jax.tree.map(lambda leaf: leaf[:1], data.train_x)
+    )  # base parameters loaded from file
 
     curve_mask, train_mask, lora_mask = config.build_masks(params["params"])
 
@@ -1501,7 +1522,6 @@ def _init_subspace_params(
             + config.model_params.jitter_multiplier
             * random.normal(key, p.shape, dtype=p.dtype)
         ),
-        lora_mask=lora_mask,
     )
 
     # set train mask according to config
@@ -1629,23 +1649,116 @@ def _make_train_batch_fn(
         loss, params, opt_state, (grad_, logs) = s_model.train_step(
             subkey, t, params, x_batch, y_batch, opt_state, optimizer
         )
+        current_lr = lr_schedule(update_idx)
+
+        # validate
+        rng_key, valid_key = random.split(rng_key)
+        metrics = jax.lax.cond(
+            (update_idx % eval_every_n_batch) == 0,
+            lambda _: valid_metrics_fn(valid_key, params)[0],
+            lambda _: empty_metric[0],
+            None,
+        )
+
+        # Check for best params
+        val_ll = metrics["val_bma_ll"]
+        is_better = val_ll > best_val_ll
+
+        best_params = jax.lax.cond(
+            is_better,
+            lambda _: get_best_params(params),
+            lambda _: best_params,
+            None,
+        )
+        best_val_ll = jnp.maximum(best_val_ll, val_ll)
+
+        new_carry = (
+            rng_key,
+            params,
+            opt_state,
+            best_val_ll,
+            best_params,
+            update_idx + 1,
+            initial_cp_center,
+        )
+        return new_carry, {"loss": loss, "current_lr": current_lr, **metrics, **logs}
+
+    return train_batch
+
+
+def _make_expert_step_fn(env: "TrainingEnv", config: "Config", *, window_size):
+    """Return a ``_train_expert_step(carry, step)`` closure for ``jax.lax.scan``."""
+    s_model = env.s_model
+    optimizer = env.optimizer
+    lr_schedule = config.optimizer_conf.lr_schedule
+    t_sample_fn = env.t_sample_fn
+    valid_metrics_fn = env.valid_metrics_fn
+    empty_metric = env.empty_metric
+    get_best_params = env.get_best_params
+    eval_every_n_batch = config.train_hyper.eval_every_n_batch
+    batch_size = config.train_hyper.batch_size
+    num_steps = config.train_hyper.num_steps
+
+    @scan_tqdm(num_steps)
+    def _train_expert_step(carry, step):
+        (
+            rng_key,
+            params,
+            opt_state,
+            best_val_ll,
+            best_params,
+            (x_all, y_all),
+        ) = carry
+        rng_key, subkey = random.split(rng_key)
+
+        t = random.uniform(subkey, (1,), minval=0.0, maxval=1.0)
+
+        # Assume first leaf of x_all gives the dataset size
+        n_samples = len(jax.tree.leaves(x_all)[0])
+
+        # get batch from data
+        pos = jnp.round(t * n_samples).squeeze().astype(int)
+        rng_key, subkey = random.split(rng_key)
+        idx = (
+            random.choice(subkey, window_size, shape=(batch_size,), replace=False)
+            + pos
+            - window_size // 2
+        )
+        idx %= n_samples  # wrap around
+
+        x_batch = jax.tree.map(
+            lambda leaf: jnp.take(leaf, idx, axis=0, mode="clip"), x_all
+        )
+        y_batch = jax.tree.map(
+            lambda leaf: jnp.take(leaf, idx, axis=0, mode="clip"), y_all
+        )
+
+        t_val = t_sample_fn(subkey)
+        loss, params, opt_state, (grad_, logs) = s_model.train_step(
+            subkey, t_val, params, x_batch, y_batch, opt_state, optimizer
+        )
         current_lr = lr_schedule(step)
 
         # validate
         rng_key, valid_key = random.split(rng_key)
         metrics = jax.lax.cond(
             (step % eval_every_n_batch) == 0,
-            lambda x: valid_metrics_fn(valid_key, params)[0],
-            lambda x: empty_metric[0],
+            lambda _: valid_metrics_fn(valid_key, params)[0],
+            lambda _: empty_metric[0],
             None,
         )
+
+        # Check for best params
+        val_ll = metrics["val_bma_ll"]
+        is_better = val_ll > best_val_ll
+
         best_params = jax.lax.cond(
-            metrics["val_bma_ll"] > best_val_ll,
-            lambda x: get_best_params(params),
-            lambda x: best_params,
+            is_better,
+            lambda _: get_best_params(params),
+            lambda _: best_params,
             None,
         )
-        best_val_ll = jnp.maximum(best_val_ll, metrics["val_bma_ll"])
+        best_val_ll = jnp.maximum(best_val_ll, val_ll)
 
         return (
             rng_key,
@@ -1653,7 +1766,7 @@ def _make_train_batch_fn(
             opt_state,
             best_val_ll,
             best_params,
-            (train_x, train_y),
+            (x_all, y_all),
         ), {"loss": loss, "current_lr": current_lr, **metrics, **logs}
 
     return _train_expert_step
@@ -1839,7 +1952,11 @@ def _setup_validation(s_model, data: "DataSplits", batch_size_eval, k):
         def valid_metrics_fn(rng, params):
             if isinstance(s_model, LoRAMixin):
                 params = s_model.set_lora_rho(rho_w=0.0, rho_s=0.0, params=params)  # type: ignore[attr-defined]
-            return valid_metrics_fn_inner(rng, params)
+            metrics, out = valid_metrics_fn_inner(rng, params)
+            # Ensure all keys from empty_metric are present to satisfy jax.lax.cond
+            full_metrics = empty_metric[0].copy()
+            full_metrics.update(metrics)
+            return full_metrics, out
 
         def get_best_params(params):
             return s_model.only_trainable_params(params["params"])
@@ -1910,7 +2027,9 @@ def _setup_training_env(
     # Initialise parameters — must happen before optimizer build so
     # curve_mask and params are available for the CP-freeze mask.
     rng_key, init_key = random.split(rng_key)
-    params = _init_subspace_params(config, s_model, init_key, fixed_cps_train_params)
+    params = _init_subspace_params(
+        config, s_model, init_key, data, fixed_cps_train_params
+    )
 
     # t sampling, rho scheduler, validation
     t_sample_fn = _setup_t_sample_fn(s_model, mp.curve_sampling_mode)
@@ -1945,12 +2064,47 @@ def _setup_training_env(
             train_step = _make_expert_step_fn(env, config, window_size=window_size)
         elif hp.ds_sampling == "minibatch":
             train_x, train_y = data.get("train")
-            train_step = _make_train_epoch_fn(
+            # Reshape into (num_batches, batch_size, ...)
+            n_train_actual = len(jax.tree.leaves(train_y)[0])
+            n_batches = hp.num_steps
+            n_epochs = hp.num_epochs if hp.num_epochs > 0 else 1
+
+            def reshape_ds(leaf):
+                n_take = min(n_batches * hp.batch_size, leaf.shape[0])
+                n_batches_actual = n_take // hp.batch_size
+                return leaf[: n_batches_actual * hp.batch_size].reshape(
+                    n_batches_actual, hp.batch_size, *leaf.shape[1:]
+                )
+
+            train_x_batches = jax.tree.map(reshape_ds, train_x)
+            train_y_batches = jax.tree.map(reshape_ds, train_y)
+            n_batches_reshaped = train_y_batches.shape[0]
+
+            train_batch_fn = _make_train_batch_fn(
                 env,
                 config,
-                train_x=train_x,
-                train_y=train_y,
+                train_x=train_x_batches,
+                train_y=train_y_batches,
             )
+
+            def train_step(carry, xs):
+                # xs is epoch indices
+                n_batches_per_epoch = n_batches_reshaped // n_epochs
+
+                def epoch_fn(carry_epoch, epoch_idx):
+                    batch_indices = (
+                        jnp.arange(n_batches_per_epoch)
+                        + epoch_idx * n_batches_per_epoch
+                    )
+
+                    return jax.lax.scan(train_batch_fn, carry_epoch, batch_indices)
+
+                # Use a simple loop for epochs instead of jax.lax.scan to bypass structure issues
+                # No, that's not possible inside JIT.
+                # Let's try to flatten the scan.
+                all_batch_indices = jnp.arange(n_batches_reshaped)
+                return jax.lax.scan(train_batch_fn, carry, all_batch_indices)
+
         else:
             raise ValueError(
                 f"Unknown dataset_sampling method {hp.ds_sampling}. "
@@ -2041,11 +2195,12 @@ def run_training(rng_key, env, params, data, config: "Config", logger, logger_pr
     # Log metrics as artifact
     batches_per_epoch = hp.num_steps // max(hp.num_epochs, 1)
     epochs = np.repeat(np.arange(hp.num_epochs), batches_per_epoch)
+    run_id = getattr(logger, "id", "local_run")
     jnp.savez(
-        f"tmp_files/{logger.id}_{logger_prefix}metrics.npz", **metrics, epochs=epochs
+        f"tmp_files/{run_id}_{logger_prefix}metrics.npz", **metrics, epochs=epochs
     )
     art = wandb.Artifact(name="metrics", type="npz")
-    art.add_file(f"tmp_files/{logger.id}_{logger_prefix}metrics.npz")
+    art.add_file(f"tmp_files/{run_id}_{logger_prefix}metrics.npz")
     logger.log_artifact(art)
 
     # Extract results from carry
@@ -2317,20 +2472,21 @@ def _train_full_curve(rng_key, config: "Config", data, train_params, logger, art
     # Save curve params
     if config.train_hyper.save_params:
         print("Save final trainable params ...")
+        run_id = getattr(logger, "id", "local_run")
         np.save(
-            f"tmp_files/{logger.id}_trainable_params.npy",
+            f"tmp_files/{run_id}_trainable_params.npy",
             env.s_model.only_trainable_params(params["params"]),
         )
         if last_trainable_params is not None:
             np.save(
-                f"tmp_files/{logger.id}_last_trainable_params.npy",
+                f"tmp_files/{run_id}_last_trainable_params.npy",
                 last_trainable_params,
             )
         time.sleep(1)
         print("Saved trainable parameters to tmp_files")
-        artifact.add_file(f"tmp_files/{logger.id}_trainable_params.npy")
+        artifact.add_file(f"tmp_files/{run_id}_trainable_params.npy")
         if last_trainable_params is not None:
-            artifact.add_file(f"tmp_files/{logger.id}_last_trainable_params.npy")
+            artifact.add_file(f"tmp_files/{run_id}_last_trainable_params.npy")
 
 
 def main():

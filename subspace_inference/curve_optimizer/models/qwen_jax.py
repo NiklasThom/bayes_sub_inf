@@ -422,6 +422,21 @@ class QwenTextClassificationWrapper:
             )  # (batch, num_classes)
             return last_token_logits  # Return probabilities for target classes only
 
+    def evaluate(self, out, y, key_prefix="", average=True, weights=None):
+        """
+        Evaluate classification metrics.
+        Args:
+            out: (n_samples, n_data, n_classes) or (n_data, n_classes)
+            y: (n_data,) or PyTree with labels
+            key_prefix: prefix for metric keys
+            average: whether to average metrics
+            weights: (n_samples,) weights for BMA
+        """
+        from subspace_inference.curve_optimizer.utils import post_pred_performance
+
+        return post_pred_performance(
+            out, y, weights=weights, key_prefix=key_prefix, average=average
+        )
 
 
 # Functions for converting PyTorch Qwen2.5 models to JAX/Flax and saving/loading / needs torch package
