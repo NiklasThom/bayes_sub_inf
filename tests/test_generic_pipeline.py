@@ -11,7 +11,6 @@ from subspace_inference.curve_optimizer.trainer.fineTuning_PtoC import (
     run_training,
     run_evaluation,
 )
-from subspace_inference.curve_optimizer.models.toy_mlp import ToyMLPWrapper
 from subspace_inference.curve_optimizer.datasets.toy_regression import (
     load_toy_regression_dataset,
 )
@@ -36,7 +35,11 @@ def test_toy_pipeline():
     # 2. Mock configuration
     config_dict = {
         "rng_seed": 42,
-        "net_kwargs": {"hidden_dim": 32, "out_dim": 1},
+        "net_kwargs": {
+            "model_type": "mlp",
+            "hidden_dim": 32,
+            "out_dim": 1,
+        },
         "train_hyper": {
             "batch_size": 10,
             "num_epochs": 2,
@@ -64,37 +67,27 @@ def test_toy_pipeline():
     config = Config.from_dict(config_dict, data)
 
     # 3. Setup training env
-    import subspace_inference.curve_optimizer.trainer.fineTuning_PtoC as ft
+    rng_key = random.PRNGKey(0)
+    env, params, rng_key = _setup_training_env(config, data, rng_key)
 
-    original_wrapper = ft.QwenTextClassificationWrapper
-    ft.QwenTextClassificationWrapper = ToyMLPWrapper
+    # 4. Run training
+    print("Starting toy training...")
+    rng_key, params, _ = run_training(rng_key, env, params, data, config, wandb, "toy_")
 
-    try:
-        rng_key = random.PRNGKey(0)
-        env, params, rng_key = _setup_training_env(config, data, rng_key)
+    # 5. Run evaluation
+    print("Starting toy evaluation...")
+    run_evaluation(
+        rng_key=rng_key,
+        env=env,
+        params=params,
+        data=data,
+        config=config,
+        logger=wandb,
+    )
 
-        # 4. Run training
-        print("Starting toy training...")
-        rng_key, params, _ = run_training(
-            rng_key, env, params, data, config, wandb, "toy_"
-        )
+    print("Toy pipeline verification successful!")
 
-        # 5. Run evaluation
-        print("Starting toy evaluation...")
-        run_evaluation(
-            rng_key=rng_key,
-            env=env,
-            params=params,
-            data=data,
-            config=config,
-            logger=wandb,
-        )
-
-        print("Toy pipeline verification successful!")
-
-    finally:
-        ft.QwenTextClassificationWrapper = original_wrapper
-        wandb.finish()
+    wandb.finish()
 
 
 if __name__ == "__main__":
