@@ -59,7 +59,9 @@ from functools import partial
 # Set environment variables
 os.environ["XLA_FLAGS"] = "--xla_force_host_platform_device_count=10"
 # Central project prefix for artifacts/datasets
-WANDB_PATH = "ddold/qwen_PtoC"
+WANDB_ENTITY = os.environ.get("WANDB_ENTITY", "ddold")
+WANDB_PROJECT = os.environ.get("WANDB_PROJECT", "qwen_PtoC")
+WANDB_PATH = f"{WANDB_ENTITY}/{WANDB_PROJECT}"
 # import sys
 # sys.setrecursionlimit(200)
 
@@ -295,7 +297,6 @@ class ModelParams:
     curve_parameterization: str = "bezier"
     indepent_connected: bool = False
     lora_params: "LoraParams | None" = field(default_factory=LoraParams)
-    perm_spec: bool = False
     mutuable_param_name: bool = False
     # Mixin fields (RepulsiveMixin, EntropyMixin, JensenShannonMixin)
     gravity: float = 0.0
@@ -339,7 +340,6 @@ class ModelParams:
             lora_params=LoraParams.from_config_dict(mp["lora_params"])
             if mp.get("lora_params")
             else None,
-            perm_spec=mp.get("perm_spec", False),
             mutuable_param_name=mp.get("mutuable_param_name", False),
             gravity=mp.get("gravity", 0.0),
             energy_weakening=mp.get("energy_weakening", 0.1),
@@ -390,7 +390,6 @@ class ModelParams:
             model=model,
             k=self.k,
             weight_decay=self.weight_decay,
-            perm_spec=self.perm_spec,
             natural_parameterization=self.natural_parameterization,
             mutuable_param_name=self.mutuable_param_name,
             curve_parameterization=self.curve_parameterization,

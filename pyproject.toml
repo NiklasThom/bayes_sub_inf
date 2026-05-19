@@ -1,62 +1,65 @@
 [tool.poetry]
-name = "bayes_sub_inf"
+name = "subspace_inference"
 version = "0.1.0"
-description = "Subspace Inference for BNNs"
+description = "Subspace Inference for Bayesian Neural Networks in JAX"
 authors = ["Daniel <ddold@htwg-konstanz.de>"]
 readme = "README.md"
+packages = [{include = "subspace_inference"}]
 
 [tool.poetry.dependencies]
 python = "^3.10,<3.12"
-ipywidgets = "^8.1.3"
-widgetsnbextension = "^4.0.11"
 flax = "^0.10.0"
 jax = {version = "^0.5.0", extras = ["cuda12"], source = "jax"} # upgrade jax with command: poetry run pip install --upgrade "jax[cuda12_local]==0.5.3" "flax==0.10.5"
-seaborn = "^0.13.2"
-ipykernel = "^6.29.5"
-pandas = "^2.2.2"
-arviz = "^0.18.0"
-matplotlib = "^3.9.0"
-notebook = "^7.2.1"
-funsor = "^0.4.5"
 wandb = "^0.17.8"
 jax-tqdm = "^0.2.2"
 einshape = "^1.0"
-# transformers = {version = "^4.50.0", extras = ["torch"]}
-accelerate = "^1.9.0"
-# torch = {version = "2.7.1", source = "torch_cuda"}
-datasets = "^4.0.0"
-graphviz = "^0.21"
-hvplot = "^0.12.1"
-datashader = "^0.18.2"
-jupyter-bokeh = "^4.0.5"
 numpyro = "^0.15.0"
 optax = "^0.2.0"
 jaxopt = "^0.8.5"
-pytest = "^9.0.2"
+scipy = "^1.10.0"
 
+# Visualization and Jupyter (Optional)
+ipywidgets = {version = "^8.1.3", optional = true}
+widgetsnbextension = {version = "^4.0.11", optional = true}
+seaborn = {version = "^0.13.2", optional = true}
+ipykernel = {version = "^6.29.5", optional = true}
+pandas = {version = "^2.2.2", optional = true}
+arviz = {version = "^0.18.0", optional = true}
+matplotlib = {version = "^3.9.0", optional = true}
+notebook = {version = "^7.2.1", optional = true}
+graphviz = {version = "^0.21", optional = true}
+hvplot = {version = "^0.12.1", optional = true}
+datashader = {version = "^0.18.2", optional = true}
+jupyter-bokeh = {version = "^4.0.5", optional = true}
+
+[tool.poetry.extras]
+viz = [
+    "ipywidgets",
+    "widgetsnbextension",
+    "seaborn",
+    "ipykernel",
+    "pandas",
+    "arviz",
+    "matplotlib",
+    "notebook",
+    "graphviz",
+    "hvplot",
+    "datashader",
+    "jupyter-bokeh"
+]
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^9.0.2"
 
 [[tool.poetry.source]]
 name = "jax"
 url = "https://storage.googleapis.com/jax-releases/jax_releases.html"
 priority = "explicit"
 
-
 [[tool.poetry.source]]
 name = "jaxlib"
 url = "https://storage.googleapis.com/jax-releases/jax_cuda_releases.html"
 priority = "explicit"
-
-
-[[tool.poetry.source]]
-name = "torch_cuda"
-url = "https://download.pytorch.org/whl/cu128"
-priority = "explicit"
-
-[[tool.poetry.source]]
-name = "torch_cpu"
-url = "https://download.pytorch.org/whl/cpu"
-priority = "explicit"
-
 
 [build-system]
 requires = ["poetry-core"]
