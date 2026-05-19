@@ -909,6 +909,23 @@ class SubspaceBaseModel:
 
 @register_subspace_model("category")
 class CategorySubspace(SubspaceBaseModel):
+    """Classification subspace model with ECE, Brier score, and accuracy metrics."""
+
+    # Empty metric template for when no validation data is available
+    empty_metric = {
+        "ll": jnp.array(-jnp.inf, dtype=jnp.float32),
+        "acc": jnp.array(-jnp.inf, dtype=jnp.float32),
+        "ece": jnp.array(jnp.inf, dtype=jnp.float32),
+        "brier": jnp.array(jnp.inf, dtype=jnp.float32),
+        "mean_loss": jnp.array(jnp.inf, dtype=jnp.float32),
+        "mean_acc": jnp.array(-jnp.inf, dtype=jnp.float32),
+        "mean_ece": jnp.array(jnp.inf, dtype=jnp.float32),
+        "bma_ll": jnp.array(-jnp.inf, dtype=jnp.float32),
+        "bma_acc": jnp.array(-jnp.inf, dtype=jnp.float32),
+        "bma_ece": jnp.array(jnp.inf, dtype=jnp.float32),
+        "bma_brier": jnp.array(jnp.inf, dtype=jnp.float32),
+    }
+
     # @partial(jit, static_argnums=(0,), donate_argnums=(2,))
     # @partial(jit, static_argnums=(0,))
     def nll(
@@ -936,7 +953,7 @@ class CategorySubspace(SubspaceBaseModel):
         )
         return jnp.mean(nll), state, out
 
-    def evaluate(self, logits, y, key_prefix="", average=True, weights=None):
+    def evaluate(self, logits, y, key_prefix="", weights=None):
         """Compute classification metrics from sampled logits.
 
         Args:
@@ -944,38 +961,66 @@ class CategorySubspace(SubspaceBaseModel):
             y: (n_data,) - integer labels
             weights: (n_samples,) optional BMA weights
             key_prefix: prefix for metric keys
-            average: if True, return averaged metrics; else return per-t-sample metrics
 
         Returns:
-            dict with metrics (ll, acc, ece, brier, and optionally mean_* per-t-sample metrics)
+            dict with metrics (ll, acc, ece, brier, mean_loss, mean_acc, mean_ece, bma_ll, bma_acc, bma_ece, bma_brier)
         """
         # Use existing utils.post_pred_performance which handles BMA weighting
+        # Convert None weights to False for uniform averaging
+        weights_for_eval = weights if weights is not None else False
         metrics = post_pred_performance(
-            logits, y, weights=weights, key_prefix=key_prefix, num_bins=15
+            logits, y, weights=weights_for_eval, key_prefix=key_prefix, num_bins=15
         )
 
-        # Add per-sample metrics if not averaging
-        if not average:
-            # Compute per-t-sample metrics
-            probs = jax.nn.softmax(logits, axis=-1)
-            confidences = jnp.max(probs, axis=-1)
-            predictions = jnp.argmax(probs, axis=-1)
-            acc_per_t = jnp.mean(predictions == y[None, :], axis=1)
-            loss_per_t = -jnp.mean(
-                jax.nn.log_softmax(logits, axis=-1)
-                * jax.nn.one_hot(y[None, :], logits.shape[-1]),
-                axis=-1,
-            )
-            metrics[f"{key_prefix}mean_acc"] = acc_per_t
-            metrics[f"{key_prefix}mean_loss"] = loss_per_t
-            # ECE per t-sample is complex, set to zeros for now
-            metrics[f"{key_prefix}mean_ece"] = jnp.zeros_like(acc_per_t)
+        # Always compute per-t-sample metrics for consistency (required by JAX lax.cond)
+        # Compute per-t-sample metrics
+        probs = jax.nn.softmax(logits, axis=-1)
+        predictions = jnp.argmax(probs, axis=-1)
+        acc_per_t = jnp.mean(predictions == y[None, :], axis=1)
+        loss_per_t = -jnp.mean(
+            jax.nn.log_softmax(logits, axis=-1)
+            * jax.nn.one_hot(y[None, :], logits.shape[-1]),
+            axis=-1,
+        )
+
+        # Add per-t-sample metrics (always averaged for consistency)
+        metrics[f"{key_prefix}mean_loss"] = jnp.mean(loss_per_t)
+        metrics[f"{key_prefix}mean_acc"] = jnp.mean(acc_per_t)
+        # ECE per t-sample is complex, set to zeros for now
+        metrics[f"{key_prefix}mean_ece"] = jnp.array(0.0, dtype=jnp.float32)
+
+        # Add BMA metrics (use uniform BMA as default when weights=None)
+        # During training, weights=None, so we use the uniform BMA metrics
+        metrics[f"{key_prefix}bma_ll"] = metrics.get(
+            f"{key_prefix}ll", jnp.array(-jnp.inf, dtype=jnp.float32)
+        )
+        metrics[f"{key_prefix}bma_acc"] = metrics.get(
+            f"{key_prefix}acc", jnp.array(-jnp.inf, dtype=jnp.float32)
+        )
+        metrics[f"{key_prefix}bma_ece"] = metrics.get(
+            f"{key_prefix}ece", jnp.array(jnp.inf, dtype=jnp.float32)
+        )
+        metrics[f"{key_prefix}bma_brier"] = metrics.get(
+            f"{key_prefix}brier", jnp.array(jnp.inf, dtype=jnp.float32)
+        )
 
         return metrics
 
 
 @register_subspace_model("regression")
 class RegressionSubspace(SubspaceBaseModel):
+    """Regression subspace model with MSE and MAE metrics."""
+
+    # Empty metric template for when no validation data is available
+    empty_metric = {
+        "loss": jnp.array(jnp.inf, dtype=jnp.float32),
+        "mse": jnp.array(jnp.inf, dtype=jnp.float32),
+        "mae": jnp.array(jnp.inf, dtype=jnp.float32),
+        "mean_loss": jnp.array(jnp.inf, dtype=jnp.float32),
+        "mean_acc": jnp.array(-jnp.inf, dtype=jnp.float32),  # Proxy for compatibility
+        "bma_ll": jnp.array(-jnp.inf, dtype=jnp.float32),
+    }
+
     def __init__(self, out_dist_log_scale=0.0, **kwargs):
         """
         Initializes the RegressionSubspace class.
@@ -1017,7 +1062,7 @@ class RegressionSubspace(SubspaceBaseModel):
         )
         return nll, state, out
 
-    def evaluate(self, logits, y, key_prefix="", average=True, weights=None):
+    def evaluate(self, logits, y, key_prefix="", weights=None):
         """Compute regression metrics from sampled predictions.
 
         Args:
@@ -1025,10 +1070,9 @@ class RegressionSubspace(SubspaceBaseModel):
             y: (n_data,) - continuous targets
             weights: (n_samples,) optional BMA weights
             key_prefix: prefix for metric keys
-            average: if True, return averaged metrics; else return per-t-sample metrics
 
         Returns:
-            dict with metrics (mse, mae, loss, and optionally mean_* per-t-sample metrics)
+            dict with metrics (mse, mae, loss, mean_loss, mean_acc, bma_ll)
         """
         # Ensemble prediction
         if weights is not None:
@@ -1048,11 +1092,15 @@ class RegressionSubspace(SubspaceBaseModel):
             f"{key_prefix}loss": loss,
         }
 
-        if not average:
-            # Per-t-sample metrics
-            per_t_mse = jnp.mean(jnp.square(logits - y[None, :, None]), axis=1)
-            metrics[f"{key_prefix}mean_loss"] = per_t_mse
-            metrics[f"{key_prefix}mean_acc"] = -per_t_mse  # Proxy for compatibility
+        # Always compute per-t-sample metrics for consistency (required by JAX lax.cond)
+        per_t_mse = jnp.mean(jnp.square(logits - y[None, :, None]), axis=1)
+        metrics[f"{key_prefix}mean_loss"] = jnp.mean(per_t_mse)
+        metrics[f"{key_prefix}mean_acc"] = -metrics[
+            f"{key_prefix}mean_loss"
+        ]  # Proxy for compatibility
+
+        # Add BMA metrics (use uniform BMA as default when weights=None)
+        metrics[f"{key_prefix}bma_ll"] = metrics[f"{key_prefix}loss"]
 
         return metrics
 

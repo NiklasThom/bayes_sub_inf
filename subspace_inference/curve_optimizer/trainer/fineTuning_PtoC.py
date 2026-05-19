@@ -108,15 +108,21 @@ def _empty_val_metric():
     """Sentinel validation metrics used when no validation data is available."""
     return (
         {
+            # Classification metrics (from post_pred_performance)
+            "val_ll": jnp.array(-jnp.inf, dtype=jnp.float32),
+            "val_acc": jnp.array(-jnp.inf, dtype=jnp.float32),
+            "val_ece": jnp.array(jnp.inf, dtype=jnp.float32),
+            "val_brier": jnp.array(jnp.inf, dtype=jnp.float32),
+            # Per-t-sample metrics (always returned by evaluate)
             "val_mean_loss": jnp.array(jnp.inf, dtype=jnp.float32),
             "val_mean_acc": jnp.array(-jnp.inf, dtype=jnp.float32),
             "val_mean_ece": jnp.array(jnp.inf, dtype=jnp.float32),
-            "val_mean_brier": jnp.array(jnp.inf, dtype=jnp.float32),
+            # BMA metrics (computed separately)
             "val_bma_ll": jnp.array(-jnp.inf, dtype=jnp.float32),
             "val_bma_acc": jnp.array(-jnp.inf, dtype=jnp.float32),
             "val_bma_ece": jnp.array(jnp.inf, dtype=jnp.float32),
             "val_bma_brier": jnp.array(jnp.inf, dtype=jnp.float32),
-            # Toy regression metrics
+            # Regression metrics (for compatibility)
             "val_loss": jnp.array(jnp.inf, dtype=jnp.float32),
             "val_mse": jnp.array(jnp.inf, dtype=jnp.float32),
             "val_mae": jnp.array(jnp.inf, dtype=jnp.float32),
@@ -721,7 +727,6 @@ def setup_metrics(
     y,
     n_samples,
     use_linspace=False,
-    average=True,
     key_prefix="",
     num_bins_ece=15,
     t_sample_fn=None,
@@ -787,7 +792,7 @@ def setup_metrics(
         # out: (n_samples, n_valid, output_dim)
 
         # Delegate evaluation to the subspace model
-        metrics = s_model.evaluate(out, y, key_prefix=key_prefix, average=average)
+        metrics = s_model.evaluate(out, y, key_prefix=key_prefix)
         return metrics, out
 
     return acc_fn
@@ -1937,7 +1942,9 @@ def _setup_validation(s_model, data: "DataSplits", batch_size_eval, k):
     Returns:
         ``(valid_metrics_fn, empty_metric, get_best_params)``
     """
-    empty_metric = _empty_val_metric()
+    # Use the subspace model's empty_metric attribute with val_ prefix
+    empty_metric_dict = {f"val_{k}": v for k, v in s_model.empty_metric.items()}
+    empty_metric = (empty_metric_dict, None)
 
     if data.has_val:
         print("save best parameters")

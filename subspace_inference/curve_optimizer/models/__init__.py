@@ -28,8 +28,7 @@ def get_model_class(name: str) -> Type[nn.Module]:
     return MODEL_REGISTRY[name]
 
 
-# Import models to register them
-from subspace_inference.curve_optimizer.models.toy_mlp import MLP
-
-# Register MLP
-MODEL_REGISTRY["mlp"] = MLP
+# Import models to register them (decorator handles registration)
+from subspace_inference.curve_optimizer.models.MLP import MLPModel, MLPFeatureModel
+from subspace_inference.curve_optimizer.models.LeNet import LeNet, LeNetti
+from subspace_inference.curve_optimizer.models.ResNet import ResNet
