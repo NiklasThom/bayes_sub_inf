@@ -33,3 +33,94 @@ This file contains crucial context for agents working in this repository.
   ```bash
   poetry run python subspace_inference/curve_optimizer/trainer/qwen_fineTuning_PtoC_fixCps.py --batch-size=4 --cp-fix 1 0 1 0 1 --smoke-test
   ```
+
+## Adding New Models
+
+The framework supports two types of model components:
+
+### 1. Model Backbones (Task-Agnostic)
+
+Model backbones are Flax `nn.Module` implementations that define the neural network architecture. They are registered in `subspace_inference/curve_optimizer/models/__init__.py`.
+
+**Example: Adding a new backbone**
+
+1. Create the model in `subspace_inference/curve_optimizer/models/my_model.py`:
+```python
+import jax.numpy as jnp
+from flax import linen as nn
+
+
+class MyModel(nn.Module):
+    hidden_dim: int = 64
+    out_dim: int = 1
+
+    @nn.compact
+    def __call__(self, x, train: bool = True):
+        x = nn.Dense(self.hidden_dim)(x)
+        x = nn.relu(x)
+        x = nn.Dense(self.out_dim)(x)
+        return x
+```
+
+2. Register it in `subspace_inference/curve_optimizer/models/__init__.py`:
+```python
+from subspace_inference.curve_optimizer.models.my_model import MyModel
+
+MODEL_REGISTRY["my_model"] = MyModel
+```
+
+3. Use in config:
+```python
+config = {
+    "net_kwargs": {
+        "model_type": "my_model",
+        "hidden_dim": 128,
+        "out_dim": 1,
+    },
+    # ... other config ...
+}
+```
+
+### 2. Subspace Models (Task-Specific)
+
+Subspace models define task-specific loss functions and evaluation metrics. They are registered in `subspace_inference/curve_optimizer/subspace_curve.py` using the `@register_subspace_model` decorator.
+
+**Example: Adding a new subspace model**
+
+1. Create the subspace class in `subspace_curve.py`:
+```python
+@register_subspace_model("my_task")
+class MyTaskSubspace(SubspaceBaseModel):
+    def nll(self, params, state, t, x, y, train=True, key=None):
+        # Define task-specific loss
+        out, state = self(params, state, t, x, train=train, key=key)
+        # ... compute loss ...
+        return loss, state, out
+    
+    def evaluate(self, logits, y, key_prefix="", average=True, weights=None):
+        # Define task-specific metrics
+        # logits: (n_samples, n_data, output_dim)
+        # y: (n_data, ...)
+        # Returns dict with metrics
+        ...
+```
+
+2. Use in config:
+```python
+config = {
+    "model_params": {
+        "subspace_model": "my_task",
+        # ... other subspace params ...
+    },
+    # ... other config ...
+}
+```
+
+### Key Points
+
+- **Backbones** (in `models/`) are task-agnostic neural network architectures
+- **Subspace models** (in `subspace_curve.py`) define task-specific loss and evaluation
+- Register both to make them available in configs
+- The `evaluate()` method receives sampled logits with shape `(n_samples, n_data, output_dim)`
+- For classification, logits are unnormalized (use softmax for probabilities)
+- For regression, logits are direct predictions
