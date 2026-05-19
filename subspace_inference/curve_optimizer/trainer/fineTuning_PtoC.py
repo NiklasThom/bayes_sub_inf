@@ -30,8 +30,8 @@ from subspace_inference.curve_optimizer.utils import (
 )
 
 # Project imports
-from subspace_inference.curve_optimizer.models.qwen_jax import (
-    QwenTextClassificationWrapper,
+from subspace_inference.curve_optimizer.datasets.text_classification import (
+    load_text_classification_dataset,
 )
 from subspace_inference.curve_optimizer.subspace_curve import (
     SubspaceBaseModel,
@@ -68,44 +68,34 @@ WANDB_PATH = f"{WANDB_ENTITY}/{WANDB_PROJECT}"
 
 @dataclass
 class DataSplits:
-    """All dataset arrays for train / val / test splits.
+    """All dataset PyTrees for train / val / test splits.
 
-    ``has_train`` and ``has_val`` are derived automatically so they never
-    go out of sync with the actual data arrays.
+    ``has_train`` and ``has_val`` are derived automatically.
     """
 
-    train_input_ids: jnp.ndarray | None = None
-    train_attention_mask: jnp.ndarray | None = None
-    train_labels: jnp.ndarray | None = None
-    val_input_ids: jnp.ndarray | None = None
-    val_attention_mask: jnp.ndarray | None = None
-    val_labels: jnp.ndarray | None = None
-    test_input_ids: jnp.ndarray | None = None
-    test_attention_mask: jnp.ndarray | None = None
-    test_labels: jnp.ndarray | None = None
+    train_x: Any | None = None
+    train_y: Any | None = None
+    val_x: Any | None = None
+    val_y: Any | None = None
+    test_x: Any | None = None
+    test_y: Any | None = None
 
     @property
     def has_train(self) -> bool:
-        return self.train_input_ids is not None
+        return self.train_x is not None
 
     @property
     def has_val(self) -> bool:
-        return self.val_input_ids is not None
+        return self.val_x is not None
 
-    def get(
-        self, name: str
-    ) -> tuple[jnp.ndarray | None, jnp.ndarray | None, jnp.ndarray | None]:
-        """Return ``(input_ids, attention_mask, labels)`` for *name* or ``None``."""
+    def get(self, name: str) -> tuple[Any | None, Any | None]:
+        """Return ``(x, y)`` PyTrees for *name* or ``None``."""
         mapping = {
-            "train": (
-                self.train_input_ids,
-                self.train_attention_mask,
-                self.train_labels,
-            ),
-            "val": (self.val_input_ids, self.val_attention_mask, self.val_labels),
-            "test": (self.test_input_ids, self.test_attention_mask, self.test_labels),
+            "train": (self.train_x, self.train_y),
+            "val": (self.val_x, self.val_y),
+            "test": (self.test_x, self.test_y),
         }
-        return mapping.get(name, (None, None, None))
+        return mapping.get(name, (None, None))
 
 
 def _empty_val_metric():
@@ -175,8 +165,9 @@ class TrainHyperparams:
         )
         has_train_data = num_epochs_cfg > 0 or num_steps_cfg > 0
         if has_train_data:
-            assert data.train_input_ids is not None
-            n_train = len(data.train_input_ids)
+            assert data.train_x is not None
+            # Assume first leaf of train_x PyTree gives the dataset size
+            n_train = len(jax.tree.leaves(data.train_x)[0])
             num_epochs = num_epochs_cfg
             num_steps = num_steps_cfg
             if num_steps > 0:
@@ -680,86 +671,34 @@ class TrainingEnv:
 # jax.config.update("jax_log_compiles", True)
 
 
-def load_text_classification_data(dataset_path: str, run=None, test=False):
-    """
-    Load text classification dataset
-
-    Args:
-        dataset_path: Path to the dataset .npz file
-        run: wandb run object for logging to load artifacts
+def _pad_to_batch(x, y, batch_size):
+    """Pad *x* and *y* PyTrees to a multiple of *batch_size*.
 
     Returns:
-        Tuple of (input_ids, attention_mask, labels, target_ids)
-    """
-    if run:
-        artifact = run.use_artifact(dataset_path, type="dataset")
-        dataset_path = artifact.download()
-
-    dataset_path = os.path.join(
-        dataset_path, "test_data.npz" if test else "train_data.npz"
-    )
-    with np.load(dataset_path) as data:
-        input_ids = jnp.array(data["input_ids"])
-        attention_mask = jnp.array(data["attention_mask"])
-        labels = jnp.array(data["labels"])
-        target_id = jnp.array(data["target_id"])
-        all_target_ids = jnp.array(data["target_ids"])
-
-    print(
-        f"Loaded {'test' if test else 'train'} dataset: input_ids={input_ids.shape}, labels={labels.shape}"
-    )
-    return input_ids, attention_mask, labels, target_id, all_target_ids
-
-
-def _pad_to_batch(x, attention_mask, target, batch_size):
-    """Pad *x*, *attention_mask*, *target* to a multiple of *batch_size*.
-
-    Padding uses zeros and does not contribute to metrics because callers
-    use the returned ``n_valid`` integer to slice / mask results.  The padded
-    arrays have a fully static shape (no Python branching on dataset size),
-    which prevents JAX from recompiling ``jax.lax.scan`` bodies.
-
-    Returns:
-        ``(x_padded, attn_padded, target_padded, n_valid)``
+        ``(x_padded, y_padded, n_valid)``
         where ``n_valid`` is the original (unpadded) number of samples.
     """
-    n = x.shape[0]
+    n = len(jax.tree.leaves(x)[0])
     n_padded = int(np.ceil(n / batch_size)) * batch_size
     pad_len = n_padded - n
     if pad_len == 0:
-        return x, attention_mask, target, n
-    x_p = jnp.concatenate(
-        [
-            x,
-            jnp.zeros((pad_len,) + x.shape[1:], dtype=x.dtype),
-        ],
-        axis=0,
-    )
-    attn_p = jnp.concatenate(
-        [
-            attention_mask,
-            jnp.zeros(
-                (pad_len,) + attention_mask.shape[1:], dtype=attention_mask.dtype
-            ),
-        ],
-        axis=0,
-    )
-    target_p = jnp.concatenate(
-        [
-            target,
-            jnp.zeros((pad_len,) + target.shape[1:], dtype=target.dtype),
-        ],
-        axis=0,
-    )
-    return x_p, attn_p, target_p, n
+        return x, y, n
+
+    def pad_leaf(leaf):
+        pad_shape = (pad_len,) + leaf.shape[1:]
+        padding = jnp.zeros(pad_shape, dtype=leaf.dtype)
+        return jnp.concatenate([leaf, padding], axis=0)
+
+    x_p = jax.tree.map(pad_leaf, x)
+    y_p = jax.tree.map(pad_leaf, y)
+    return x_p, y_p, n
 
 
 def setup_metrics(
     model,
     batch_size,
     x,
-    attention_mask,
-    target,
+    y,
     n_samples,
     use_linspace=False,
     average=True,
@@ -771,15 +710,11 @@ def setup_metrics(
     if t_max is None:
         t_max = getattr(model, "t_max", 1.0)
 
-    # Fix 2: pad to full batches once at setup time — eliminates the
-    # ``if len(idx_last) > 0`` Python branch inside acc_fn, which used to
-    # produce arrays of different shapes and trigger JAX recompilation.
-    x_pad, attn_pad, target_pad, n_valid = _pad_to_batch(
-        x, attention_mask, target, batch_size
-    )
-    idx_ = jnp.arange(x_pad.shape[0]).reshape(-1, batch_size)  # always full batches
+    x_pad, y_pad, n_valid = _pad_to_batch(x, y, batch_size)
+    n_total = len(jax.tree.leaves(x_pad)[0])
+    idx_ = jnp.arange(n_total).reshape(-1, batch_size)  # always full batches
 
-    # Build the t-sampling closure (n_s passed explicitly so get_t is shape-generic).
+    # Build the t-sampling closure
     if t_sample_fn is None:
         if use_linspace:
 
@@ -798,16 +733,10 @@ def setup_metrics(
         def get_t(k, n_s):
             return jax.vmap(lambda key: t_sample_fn(key))(random.split(k, n_s))
 
-    # Fix 1 & 3: a single jitted evaluation core whose trace is stable as long
-    # as the closed-over arrays (x_pad, attn_pad, target_pad) keep the same
-    # shape.  ``n_s`` is declared static so JAX never conflates a 3-sample
-    # smoke-test trace with the 20-sample full-eval trace.
     @partial(jax.jit, static_argnames=("n_s",))
     def _eval_core(rng_key, params, n_s):
         def pred(rng_key, data_idx):
-            x_batch = x_pad.at[data_idx].get()
-            att_m_batch = attn_pad.at[data_idx].get()
-            # y_batch = target_pad.at[data_idx].get()
+            x_batch = jax.tree.map(lambda leaf: leaf.at[data_idx].get(), x_pad)
 
             rng_key, key_ = random.split(rng_key)
             t_tree = get_t(key_, n_s)  # shape (n_s,)
@@ -818,7 +747,7 @@ def setup_metrics(
                     params["params"],
                     {},
                     t,
-                    (x_batch, att_m_batch),
+                    x_batch,
                     train=False,
                     key=subkey,
                 )
@@ -833,50 +762,13 @@ def setup_metrics(
         out = out.transpose(1, 0, 2, 3).reshape(n_s, -1, out.shape[-1])[:, :n_valid, :]
         return rng_key, out  # (n_s, n_valid, output_dim)
 
-    # Use shared post_pred_performance from src.utils (returns prefixed keys when key_prefix provided)
-
     def acc_fn(rng_key, params):
         rng_key, out = _eval_core(rng_key, params, n_samples)
         # out: (n_samples, n_valid, output_dim)
 
-        bma_metrics = post_pred_performance(
-            out, target, key_prefix=key_prefix + "bma_", num_bins=num_bins_ece
-        )
-
-        ece = jax.vmap(ece_fn, in_axes=(0, None, None))(
-            out, target, num_bins_ece
-        )  # (n_samples,)
-        acc = jnp.argmax(out, axis=-1) == target  # (n_samples, n_valid)
-
-        # Brier score (n_samples, n_valid)
-        probs = jax.nn.softmax(out, axis=-1)
-        true_probs = jax.nn.one_hot(target, out.shape[-1])
-        brier = jnp.sum((probs - true_probs) ** 2, axis=-1)
-
-        # Recompute NLL from returned logits — avoids accumulating a separate
-        # loss tensor through the padded scan, eliminating shape mismatches.
-        log_probs = jax.nn.log_softmax(out, axis=-1)  # (n_samples, n_valid, n_classes)
-        loss = -jnp.sum(
-            log_probs * jax.nn.one_hot(target, out.shape[-1]), axis=-1
-        )  # (n_samples, n_valid)
-
-        if average:
-            ece = jnp.mean(ece)
-            loss = loss.mean()
-            acc = acc.sum() / (n_samples * n_valid)
-            brier = brier.mean()
-        else:
-            loss = jnp.mean(loss, axis=1)  # (n_samples,) — mean NLL per t-sample
-            acc = jnp.sum(acc, axis=1) / n_valid
-            brier = jnp.mean(brier, axis=1)
-
-        return {
-            key_prefix + "mean_loss": loss,
-            key_prefix + "mean_acc": acc,
-            key_prefix + "mean_ece": ece,
-            key_prefix + "mean_brier": brier,
-            **bma_metrics,
-        }, out
+        # Delegate evaluation to the model wrapper
+        metrics = model.evaluate(out, y, key_prefix=key_prefix, average=average)
+        return metrics, out
 
     return acc_fn
 
@@ -1043,16 +935,13 @@ def run_evaluation(
     t_max = getattr(s_model, "t_max", 1.0)
     n_samples = 3 if (smoke_test or k == 0) else config.model_params.n_samples_eval
 
-    def _logits(
-        input_ids, attention_mask, labels, n_samples, use_linspace=True, key_prefix=""
-    ):
+    def _logits(x, y, n_samples, use_linspace=True, key_prefix=""):
         """Compute per-sample metrics and logits for one dataset split."""
         metrics_fn = setup_metrics(
             s_model,
             max(batch_size_eval, 1),
-            input_ids,
-            attention_mask,
-            labels,
+            x,
+            y,
             n_samples=n_samples,
             use_linspace=use_linspace,
             average=False,
@@ -1063,12 +952,10 @@ def run_evaluation(
 
     # ---- k == 0: simple single-point evaluation ----
     if k == 0:
-        test_ids, test_mask, test_labels = data.get("test")
+        test_x, test_y = data.get("test")
         print("Evaluating test set (k=0)")
-        _, logits = _logits(
-            test_ids, test_mask, test_labels, n_samples=1, key_prefix="test_"
-        )
-        pp = post_pred_performance(logits, test_labels)
+        _, logits = _logits(test_x, test_y, n_samples=1, key_prefix="test_")
+        pp = s_model.model.evaluate(logits, test_y)
         logger.summary.update({f"{logger_prefix}test_{mk}": v for mk, v in pp.items()})
         logger.summary.update(
             {f"{logger_prefix}test_entropy": entropy(logits.astype(jnp.float32)).mean()}
@@ -1097,21 +984,246 @@ def run_evaluation(
             (ds_for_posterior == "train") or (ds_for_posterior == "all")
         ):
             print("Computing posterior weights on train set")
-            train_ids, train_mask, train_labels = data.get("train")
+            train_x, train_y = data.get("train")
             train_metrics, train_logits = _logits(
-                train_ids,
-                train_mask,
-                train_labels,
+                train_x,
+                train_y,
                 n_samples=n_samples,
                 key_prefix="train_ppd_",
             )
 
-            train_pp = post_pred_performance(train_logits, train_labels)
-            logger.summary.update(
-                {
-                    f"{logger_prefix}train_ppd_uniform_{mk}": v
-                    for mk, v in train_pp.items()
-                }
+            train_pp = s_model.model.evaluate(
+                train_logits, train_y, key_prefix="train_ppd_uniform_"
+            )
+            logger.summary.update(train_pp)
+
+            # Plot train curve
+            fig = _plot_curve_along_t(
+                t_space,
+                train_metrics["train_ppd_mean_loss"],
+                train_metrics["train_ppd_mean_acc"],
+                train_metrics["train_ppd_mean_ece"],
+                title="Curve @ Train",
+            )
+            logger.log({"Curve Predictive Train": wandb.Image(fig)})
+            plt.close(fig)
+
+            if art_logits is not None:
+                # Save train logits artifact
+                jnp.savez(
+                    f"tmp_files/{logger.id}_train_logits.npz",
+                    logits=train_logits,
+                    labels=train_y,
+                )
+                art_logits.add_file(f"tmp_files/{logger.id}_train_logits.npz")
+                print("Saved train logits artifact")
+
+            # unnormalised posterior weights (important use sum instead of mean for normalisation (logsumexp) to get correct weights for different n_samples (with mean, we would imply temperature scaling of the likelihood which is not intended would be log(p(D|\theta)^{1/N})))
+            log_like += (
+                -train_metrics["train_ppd_mean_loss"] * train_logits.shape[1]
+            )  # un-average NLL (#samples,)
+
+        if data.has_val and (
+            (ds_for_posterior != "val") or (ds_for_posterior == "all")
+        ):
+            print("Computing posterior weights on validation set")
+            val_x, val_y = data.get("val")
+            val_metrics, val_logits = _logits(
+                val_x,
+                val_y,
+                n_samples=n_samples,
+                key_prefix="val_ppd_",
+            )
+
+            val_pp = s_model.model.evaluate(
+                val_logits, val_y, key_prefix="val_ppd_uniform_"
+            )
+            logger.summary.update(val_pp)
+            # Plot val curve
+            fig = _plot_curve_along_t(
+                t_space,
+                val_metrics["val_ppd_mean_loss"],
+                val_metrics["val_ppd_mean_acc"],
+                val_metrics["val_ppd_mean_ece"],
+                title="Curve @ Validation",
+            )
+            logger.log({"Curve Predictive Val": wandb.Image(fig)})
+            plt.close(fig)
+
+            if art_logits is not None:
+                # Save val logits artifact
+                jnp.savez(
+                    f"tmp_files/{logger.id}_val_logits.npz",
+                    logits=val_logits,
+                    labels=val_y,
+                )
+                art_logits.add_file(f"tmp_files/{logger.id}_val_logits.npz")
+                print("Saved val logits artifact")
+
+            log_like += (
+                -val_metrics["val_ppd_mean_loss"] * val_logits.shape[1]
+            )  # un-average NLL
+
+        if not jnp.allclose(log_like, 0.0):
+            weights_all = _compute_posterior_weights(log_like, temperature)
+
+            # Save weights artifact
+            art_w = wandb.Artifact(name="bma_weights", type="npz")
+            jnp.savez(
+                f"tmp_files/{logger.id}_weights.npz",
+                weights=weights_all,
+                t_space=t_space,
+                log_like=log_like,
+                temperature=temperature,
+            )
+            art_w.add_file(f"tmp_files/{logger.id}_weights.npz")
+            logger.log_artifact(art_w)
+            print("Saved posterior weights artifact")
+
+        elif artifact_weights is not None:
+            for f in artifact_weights.files():
+                if "weights" in f.name:
+                    wf = np.load(
+                        artifact_weights.get_entry(f.name).download(), allow_pickle=True
+                    )
+                    weights_all = _compute_posterior_weights(
+                        wf["log_like"], temperature
+                    )
+                    print("Loaded posterior weights from artifact")
+                    break
+            else:
+                raise RuntimeError("No weights file found in artifact")
+        else:
+            raise RuntimeError(
+                f"No log-likelihood computed for posterior weights — check that train/val or all is set in combinateion with combined sampling mode. Current mode: {curve_sampling_mode} with selected {ds_for_posterior} for posterior weights"
+            )
+
+    # -- Compute test logits (once) --
+    use_linspace = curve_sampling_mode != "per_leave"
+    key_prefix = "test_ppd_"
+    print(
+        f"Evaluating test set ({'linspace' if use_linspace else 't_sample'}, "
+        f"{n_samples} samples)"
+    )
+    test_x, test_y = data.get("test")
+    test_metrics, test_logits = _logits(
+        test_x,
+        test_y,
+        n_samples=n_samples,
+        use_linspace=use_linspace,
+        key_prefix=key_prefix,
+    )
+
+    if art_logits is not None:
+        # Save test logits artifact
+        jnp.savez(
+            f"tmp_files/{logger.id}_test_logits.npz",
+            logits=test_logits,
+            labels=test_y,
+        )
+        art_logits.add_file(f"tmp_files/{logger.id}_test_logits.npz")
+        logger.log_artifact(art_logits)
+        print("Saved test logits artifact")
+
+    # -- Plot test performance along curve (not per_leave) --
+    if use_linspace:
+        fig = _plot_curve_along_t(
+            t_space,
+            test_metrics[key_prefix + "mean_loss"],
+            test_metrics[key_prefix + "mean_acc"],
+            test_metrics[key_prefix + "mean_ece"],
+            title="Final testset",
+        )
+        logger.log({"Curve Predictive": wandb.Image(fig)})
+        plt.close(fig)
+
+    # -- Report test performance --
+    # Always log uniform-BMA test metrics
+    pp = s_model.model.evaluate(test_logits, test_y, key_prefix=key_prefix + "uniform_")
+    logger.summary.update(pp)
+
+    # Uncertainty metrics (always for k > 0)
+    mi = mutual_information(test_logits.astype(jnp.float32))
+    me = mean_entropy(test_logits.astype(jnp.float32))
+    entrop = entropy(test_logits.astype(jnp.float32))
+    logger.summary.update(
+        {
+            f"{logger_prefix}{key_prefix}uniform_mutual_information": mi,
+            f"{logger_prefix}{key_prefix}uniform_mean_entropy": me,
+            f"{logger_prefix}{key_prefix}uniform_std_entropy_along_curve": entrop.mean(
+                -1
+            ).std(),
+            f"{logger_prefix}{key_prefix}uniform_mean_entropy_along_curve": entrop.mean(),
+        }
+    )
+
+    # Weighted metrics (combined mode with posterior weights)
+    if curve_sampling_mode.startswith("combined") and weights_all is not None:
+        best_weight = weights_all[
+            0
+        ]  # if temperature is used, this will be the best temp weight; if not, it's the uniform weight (same as False) so no harm done
+
+        # if isinstance(best_weight, jnp.ndarray):
+        # Best temperature was found on val — use it
+        pp_w = s_model.model.evaluate(
+            test_logits, test_y, weights=best_weight, key_prefix=key_prefix
+        )
+        logger.summary.update(pp_w)
+        mi = mutual_information(test_logits.astype(jnp.float32), weights=best_weight)
+        me = mean_entropy(test_logits.astype(jnp.float32), weights=best_weight)
+        logger.summary.update(
+            {
+                f"{logger_prefix}{key_prefix}weighted_mutual_information": mi,
+                f"{logger_prefix}{key_prefix}weighted_mean_entropy": me,
+            }
+        )
+
+        return metrics_fn(rng_key, params)
+
+    # ---- k == 0: simple single-point evaluation ----
+    if k == 0:
+        test_x, test_y = data.get("test")
+        print("Evaluating test set (k=0)")
+        _, logits = _logits(test_x, test_y, n_samples=1, key_prefix="test_")
+        pp = s_model.model.evaluate(logits, test_y, key_prefix="test_")
+        logger.summary.update(pp)
+        logger.summary.update(
+            {f"{logger_prefix}test_entropy": entropy(logits.astype(jnp.float32)).mean()}
+        )
+        return {"test_logits": logits}
+
+    art_logits = None
+    if config.train_hyper.save_params:
+        art_logits = wandb.Artifact(name="logits", type="npz")
+
+    # ---- k > 0: curve evaluation ----
+    t_space = jnp.linspace(0, t_max, n_samples)
+    best_weight = False  # stays False → uniform BMA
+    weights_all = None
+    log_like = jnp.zeros(
+        n_samples
+    )  # placeholder for uniform case (log_like not used when best_weight is False)
+
+    if (
+        curve_sampling_mode.startswith("combined")
+        and "noBMA" not in curve_sampling_mode
+    ):
+        ds_for_posterior = curve_sampling_mode.split("_")[-1]
+        # -- Compute BMA weights on train set --
+        if data.has_train and (
+            (ds_for_posterior == "train") or (ds_for_posterior == "all")
+        ):
+            print("Computing posterior weights on train set")
+            train_x, train_y = data.get("train")
+            train_metrics, train_logits = _logits(
+                train_x,
+                train_y,
+                n_samples=n_samples,
+                key_prefix="train_ppd_",
+            )
+
+            train_pp = s_model.model.evaluate(
+                train_logits, train_y, key_prefix="train_ppd_uniform_"
             )
 
             # Plot train curve
@@ -1144,19 +1256,18 @@ def run_evaluation(
             (ds_for_posterior != "val") or (ds_for_posterior == "all")
         ):
             print("Computing posterior weights on validation set")
-            val_ids, val_mask, val_labels = data.get("val")
+            val_x, val_y = data.get("val")
             val_metrics, val_logits = _logits(
-                val_ids,
-                val_mask,
-                val_labels,
+                val_x,
+                val_y,
                 n_samples=n_samples,
                 key_prefix="val_ppd_",
             )
 
-            val_pp = post_pred_performance(val_logits, val_labels)
-            logger.summary.update(
-                {f"{logger_prefix}val_ppd_uniform_{mk}": v for mk, v in val_pp.items()}
+            val_pp = s_model.model.evaluate(
+                val_logits, val_y, key_prefix="val_ppd_uniform_"
             )
+            logger.summary.update(val_pp)
             # Plot val curve
             fig = _plot_curve_along_t(
                 t_space,
@@ -1245,11 +1356,10 @@ def run_evaluation(
         f"Evaluating test set ({'linspace' if use_linspace else 't_sample'}, "
         f"{n_samples} samples)"
     )
-    test_ids, test_mask, test_labels = data.get("test")
+    test_x, test_y = data.get("test")
     test_metrics, test_logits = _logits(
-        test_ids,
-        test_mask,
-        test_labels,
+        test_x,
+        test_y,
         n_samples=n_samples,
         use_linspace=use_linspace,
         key_prefix=key_prefix,
@@ -1260,7 +1370,7 @@ def run_evaluation(
         jnp.savez(
             f"tmp_files/{logger.id}_test_logits.npz",
             logits=test_logits,
-            labels=test_labels,
+            labels=test_y,
         )
         art_logits.add_file(f"tmp_files/{logger.id}_test_logits.npz")
         logger.log_artifact(art_logits)
@@ -1280,10 +1390,8 @@ def run_evaluation(
 
     # -- Report test performance --
     # Always log uniform-BMA test metrics
-    pp = post_pred_performance(test_logits, test_labels)
-    logger.summary.update(
-        {f"{logger_prefix}{key_prefix}uniform_{mk}": v for mk, v in pp.items()}
-    )
+    pp = s_model.model.evaluate(test_logits, test_y, key_prefix=key_prefix + "uniform_")
+    logger.summary.update(pp)
 
     # Uncertainty metrics (always for k > 0)
     mi = mutual_information(test_logits.astype(jnp.float32))
@@ -1308,10 +1416,10 @@ def run_evaluation(
 
         # if isinstance(best_weight, jnp.ndarray):
         # Best temperature was found on val — use it
-        pp_w = post_pred_performance(test_logits, test_labels, best_weight)
-        logger.summary.update(
-            {f"{logger_prefix}{key_prefix}{mk}": v for mk, v in pp_w.items()}
+        pp_w = s_model.model.evaluate(
+            test_logits, test_y, weights=best_weight, key_prefix=key_prefix
         )
+        logger.summary.update(pp_w)
         mi = mutual_information(test_logits.astype(jnp.float32), weights=best_weight)
         me = mean_entropy(test_logits.astype(jnp.float32), weights=best_weight)
         logger.summary.update(
@@ -1477,9 +1585,8 @@ def _make_train_batch_fn(
     env: "TrainingEnv",
     config: "Config",
     *,
-    train_input_ids,
-    train_attention_mask,
-    train_labels,
+    train_x,
+    train_y,
 ):
     """Return a ``train_batch(carry, batch_idx)`` closure for ``jax.lax.scan``.
 
@@ -1510,177 +1617,17 @@ def _make_train_batch_fn(
             initial_cp_center,
         ) = carry
 
-        x_batch = jnp.take(train_input_ids, batch_idx, axis=0)
-        atten_batch = jnp.take(train_attention_mask, batch_idx, axis=0)
-        y_ = jnp.take(train_labels, batch_idx, axis=0)
+        x_batch = jax.tree.map(lambda leaf: jnp.take(leaf, batch_idx, axis=0), train_x)
+        y_batch = jax.tree.map(lambda leaf: jnp.take(leaf, batch_idx, axis=0), train_y)
 
         rng_key, subkey = random.split(rng_key)
-        t = t_sample_fn(subkey)
         if lora_rho > 0.0 or lora_rho_s > 0.0:
             current_rho = rho_scheduler(update_idx, lora_rho)
             current_rho_s = rho_scheduler(update_idx, lora_rho_s)
             params = s_model.set_lora_rho(current_rho, current_rho_s, params)  # type: ignore[attr-defined]
-        loss, params, opt_state, (grad_, logs) = s_model.train_step(
-            subkey, t, params, (x_batch, atten_batch), y_, opt_state, optimizer
-        )
-        current_lr = lr_schedule(update_idx)
-        # validate
-        rng_key, valid_key = random.split(rng_key)
-
-        metrics = jax.lax.cond(
-            (update_idx % eval_every_n_batch) == 0,
-            lambda x: valid_metrics_fn(valid_key, params)[0],
-            lambda x: empty_metric[0],
-            None,
-        )
-        best_params = jax.lax.cond(
-            metrics["val_bma_ll"] > best_val_ll,
-            lambda x: get_best_params(params),
-            lambda x: best_params,
-            None,
-        )
-        best_val_ll = jnp.maximum(best_val_ll, metrics["val_bma_ll"])
-
-        # drop mean metrics
-        metrics = {k: v for k, v in metrics.items() if not k.startswith("val_mean")}
-
-        if k > 0:
-            cp = masked_pytree_to_matrix(params["params"], s_model.curve_mask, k)
-            upper_length = upper_bound(cp)
-            lower_length = lower_bound(cp)
-            mean_center = bezier_mass_center(cp)
-            gyration_radius = bezier_gyration(cp)
-            rel_center = bezier_rel_center(cp, initial_cp_center)
-
-            return (
-                rng_key,
-                params,
-                opt_state,
-                best_val_ll,
-                best_params,
-                update_idx + 1,
-                initial_cp_center,
-            ), {
-                "loss": loss,
-                "current_lr": current_lr,
-                "upper_length": upper_length,
-                "lower_length": lower_length,
-                "mean_center": mean_center,
-                "gyration_radius": gyration_radius,
-                "rel_center": rel_center,
-                **metrics,
-                **logs,
-            }
-        else:
-            return (
-                rng_key,
-                params,
-                opt_state,
-                best_val_ll,
-                best_params,
-                update_idx + 1,
-                initial_cp_center,
-            ), {"loss": loss, "current_lr": current_lr, **metrics, **logs}
-
-    return train_batch
-
-
-def _make_train_epoch_fn(
-    env: "TrainingEnv",
-    config: "Config",
-    *,
-    train_input_ids,
-    train_attention_mask,
-    train_labels,
-):
-    """Return a ``train_epoch(carry, epoch)`` closure for ``jax.lax.scan``.
-
-    Internally creates the per-batch function via ``_make_train_batch_fn``.
-    ``initial_cp_center`` is expected in position 6 of the carry tuple.
-    """
-    hp = config.train_hyper
-    train_batch_fn = _make_train_batch_fn(
-        env,
-        config,
-        train_input_ids=train_input_ids,
-        train_attention_mask=train_attention_mask,
-        train_labels=train_labels,
-    )
-    n_train_samples = train_labels.shape[0]
-    batch_size = hp.batch_size
-    num_epochs = hp.num_epochs
-
-    def _inf_mean(x):
-        mask = jnp.isfinite(x)
-        return jnp.where(mask, x, 0).sum() / mask.sum()  # type: ignore[union-attr]
-
-    @scan_tqdm(num_epochs)
-    def train_epoch(carry, epoch):
-        rng_key = carry[0]
-        rng_key, subkey = random.split(rng_key)
-        shuffel_idx = random.permutation(subkey, n_train_samples)
-        shuffel_idx = es("(ib)->ib", shuffel_idx, b=batch_size)
-
-        # train on batches
-        carry, metrics = jax.lax.scan(train_batch_fn, carry, shuffel_idx)
-        val_loss_ = _inf_mean(metrics["val_bma_ll"])
-        val_acc_ = _inf_mean(metrics["val_bma_acc"])
-        jax.debug.print(
-            "Epoch {}/{}: Loss: {}, Val Loss: {}, Val Acc: {}",
-            epoch + 1,
-            num_epochs,
-            metrics["loss"][-1],
-            val_loss_,
-            val_acc_,
-        )
-        return carry, metrics
-
-    return train_epoch
-
-
-def _make_expert_step_fn(env: "TrainingEnv", config: "Config", *, window_size):
-    """Return a ``_train_expert_step(carry, step)`` closure for ``jax.lax.scan``."""
-    s_model = env.s_model
-    optimizer = env.optimizer
-    lr_schedule = config.optimizer_conf.lr_schedule
-    t_sample_fn = env.t_sample_fn
-    valid_metrics_fn = env.valid_metrics_fn
-    empty_metric = env.empty_metric
-    get_best_params = env.get_best_params
-    eval_every_n_batch = config.train_hyper.eval_every_n_batch
-    batch_size = config.train_hyper.batch_size
-    num_steps = config.train_hyper.num_steps
-
-    @scan_tqdm(num_steps)
-    def _train_expert_step(carry, step):
-        (
-            rng_key,
-            params,
-            opt_state,
-            best_val_ll,
-            best_params,
-            (x_all, atten_all, y_all),
-        ) = carry
-        rng_key, subkey = random.split(rng_key)
-
-        t = random.uniform(subkey, (1,), minval=0.0, maxval=1.0)
-
-        # get batch from data
-        pos = jnp.round(t * x_all.shape[0]).squeeze().astype(int)
-        rng_key, subkey = random.split(rng_key)
-        idx = (
-            random.choice(subkey, window_size, shape=(batch_size,), replace=False)
-            + pos
-            - window_size // 2
-        )
-        idx %= x_all.shape[0]  # wrap around
-        x_batch = jnp.take(x_all, idx, axis=0, mode="clip")
-        atten_batch = jnp.take(atten_all, idx, axis=0, mode="clip")
-        y_ = jnp.take(y_all, idx, axis=0, mode="clip")
-
         t = t_sample_fn(subkey)
         loss, params, opt_state, (grad_, logs) = s_model.train_step(
-            subkey, t, params, (x_batch, atten_batch), y_, opt_state, optimizer
+            subkey, t, params, x_batch, y_batch, opt_state, optimizer
         )
         current_lr = lr_schedule(step)
 
@@ -1706,7 +1653,7 @@ def _make_expert_step_fn(env: "TrainingEnv", config: "Config", *, window_size):
             opt_state,
             best_val_ll,
             best_params,
-            (x_all, atten_all, y_all),
+            (train_x, train_y),
         ), {"loss": loss, "current_lr": current_lr, **metrics, **logs}
 
     return _train_expert_step
@@ -1763,10 +1710,10 @@ def _compute_expert_embeddings(
     params = model.init(None, None)
     hp = config.train_hyper
     print("compute embeddings for expert sort")
-    train_input_ids, train_attention_mask, _ = data.get("train")
-    embedding = get_embedding(
-        train_input_ids, train_attention_mask, model, params, hp.batch_size
-    )
+    train_x, _ = data.get("train")
+    input_ids = train_x["input_ids"]
+    attention_mask = train_x["attention_mask"]
+    embedding = get_embedding(input_ids, attention_mask, model, params, hp.batch_size)
     print(f"Computed embeddings for expert sort with shape {embedding.shape}")
     device = embedding.device
     embedding = jax.device_put(embedding, jax.devices("cpu")[0])
@@ -1786,18 +1733,16 @@ def _sort_data_for_expert(rng_key, data: "DataSplits", config: "Config", model):
     training arrays.
 
     Returns:
-        ``(train_input_ids, train_attention_mask, train_labels)``
+        ``(train_x, train_y)``
     """
-    train_input_ids, train_attention_mask, train_labels = data.get("train")
-    assert (
-        train_input_ids is not None
-        and train_attention_mask is not None
-        and train_labels is not None
-    )
+    train_x, train_y = data.get("train")
+    assert train_x is not None and train_y is not None
     sort_mode = config.train_hyper.dataset_sampling["expert"].get("sort_mode", False)
 
+    n_samples = len(jax.tree.leaves(train_y)[0])
+
     if sort_mode == "Random":
-        order = random.permutation(rng_key, train_input_ids.shape[0])
+        order = random.permutation(rng_key, n_samples)
     elif sort_mode:
         cosine_sim = _compute_expert_embeddings(model, data, config)
         assert cosine_sim is not None, "cosine_sim required for non-Random expert sort"
@@ -1823,9 +1768,11 @@ def _sort_data_for_expert(rng_key, data: "DataSplits", config: "Config", model):
             raise ValueError(f"Unknown sort_mode {sort_mode} for expert sampling.")
         print(f"Data sorted for expert sampling using {sort_mode} method")
     else:
-        return train_input_ids, train_attention_mask, train_labels
+        return train_x, train_y
 
-    return train_input_ids[order], train_attention_mask[order], train_labels[order]
+    train_x = jax.tree.map(lambda leaf: leaf[order], train_x)
+    train_y = jax.tree.map(lambda leaf: leaf[order], train_y)
+    return train_x, train_y
 
 
 # ---------------------------------------------------------------------------
@@ -1879,13 +1826,12 @@ def _setup_validation(s_model, data: "DataSplits", batch_size_eval, k):
 
     if data.has_val:
         print("save best parameters")
-        val_input_ids, val_attention_mask, val_labels = data.get("val")
+        val_x, val_y = data.get("val")
         valid_metrics_fn_inner = setup_metrics(
             s_model,
             batch_size_eval,
-            val_input_ids,
-            val_attention_mask,
-            val_labels,
+            val_x,
+            val_y,
             n_samples=10 if k > 0 else 1,
             key_prefix="val_",
         )
@@ -1998,13 +1944,12 @@ def _setup_training_env(
             window_size = max(hp.batch_size, window_size)
             train_step = _make_expert_step_fn(env, config, window_size=window_size)
         elif hp.ds_sampling == "minibatch":
-            train_input_ids, train_attention_mask, train_labels = data.get("train")
+            train_x, train_y = data.get("train")
             train_step = _make_train_epoch_fn(
                 env,
                 config,
-                train_input_ids=train_input_ids,
-                train_attention_mask=train_attention_mask,
-                train_labels=train_labels,
+                train_x=train_x,
+                train_y=train_y,
             )
         else:
             raise ValueError(
@@ -2149,75 +2094,60 @@ def _prepare_datasets(
         ``(data, unique_target_ids, rng_key)``
     """
     # Load train and test data
-    (
-        input_ids,
-        attention_mask,
-        labels,
-        _,
-        unique_target_ids,
-    ) = load_text_classification_data(dataset_path, run=logger)
-    print(f"Dataset loaded: {len(input_ids)} samples, {len(unique_target_ids)} classes")
+    x, y, unique_target_ids = load_text_classification_dataset(dataset_path, run=logger)
+    n_samples = len(jax.tree.leaves(y)[0])
+    print(f"Dataset loaded: {n_samples} samples, {len(unique_target_ids)} classes")
 
-    (
-        test_input_ids,
-        test_attention_mask,
-        test_labels,
-        _,
-        unique_target_ids,
-    ) = load_text_classification_data(dataset_path, run=logger, test=True)
+    test_x, test_y, _ = load_text_classification_dataset(
+        dataset_path, run=logger, test=True
+    )
+
     print(f"Target token IDs: {unique_target_ids}")
 
     # Shuffle and split into train / val
     rng_key, split_key = random.split(rng_key)
-    perm_idx = random.permutation(split_key, len(input_ids))
-    ordered_ids = input_ids[perm_idx]
-    ordered_mask = attention_mask[perm_idx]
-    ordered_labels = labels[perm_idx]
+    perm_idx = random.permutation(split_key, n_samples)
+    ordered_x = jax.tree.map(lambda leaf: leaf[perm_idx], x)
+    ordered_y = jax.tree.map(lambda leaf: leaf[perm_idx], y)
 
     n_train = int(
-        np.floor((1.0 - val_percentage) * len(input_ids) / batch_size) * batch_size
+        np.floor((1.0 - val_percentage) * n_samples / batch_size) * batch_size
     )
-    train_input_ids = ordered_ids[:n_train]
-    train_attention_mask = ordered_mask[:n_train]
-    train_labels = ordered_labels[:n_train]
-    val_input_ids = ordered_ids[n_train:] if val_percentage > 0.0 else None
-    val_attention_mask = ordered_mask[n_train:] if val_percentage > 0.0 else None
-    val_labels = ordered_labels[n_train:] if val_percentage > 0.0 else None
+    train_x = jax.tree.map(lambda leaf: leaf[:n_train], ordered_x)
+    train_y = jax.tree.map(lambda leaf: leaf[:n_train], ordered_y)
+
+    has_val = val_percentage > 0.0 and (n_samples - n_train) > 0
+    val_x = jax.tree.map(lambda leaf: leaf[n_train:], ordered_x) if has_val else None
+    val_y = jax.tree.map(lambda leaf: leaf[n_train:], ordered_y) if has_val else None
 
     # Smoke-test truncation: keep only a few batches so the run finishes fast
     if smoke_test:
         n_smoke = 3 * batch_size
-        train_input_ids = train_input_ids[:n_smoke]
-        train_attention_mask = train_attention_mask[:n_smoke]
-        train_labels = train_labels[:n_smoke]
-        if val_input_ids is not None:
-            assert val_attention_mask is not None and val_labels is not None
-            val_input_ids = val_input_ids[:batch_size]
-            val_attention_mask = val_attention_mask[:batch_size]
-            val_labels = val_labels[:batch_size]
-        test_input_ids = test_input_ids[:n_smoke]
-        test_attention_mask = test_attention_mask[:n_smoke]
-        test_labels = test_labels[:n_smoke]
+        train_x = jax.tree.map(lambda leaf: leaf[:n_smoke], train_x)
+        train_y = jax.tree.map(lambda leaf: leaf[:n_smoke], train_y)
+        if has_val:
+            val_x = jax.tree.map(lambda leaf: leaf[:batch_size], val_x)
+            val_y = jax.tree.map(lambda leaf: leaf[:batch_size], val_y)
+        test_x = jax.tree.map(lambda leaf: leaf[:n_smoke], test_x)
+        test_y = jax.tree.map(lambda leaf: leaf[:n_smoke], test_y)
         print(f"Smoke test: dataset truncated to {n_smoke} train samples")
 
-    has_val = val_input_ids is not None and len(val_input_ids) > 0
     if has_val:
         print("Validation data are used")
+
+    n_train_actual = len(jax.tree.leaves(train_y)[0])
+    n_val_actual = len(jax.tree.leaves(val_y)[0]) if has_val else 0
     print(
-        f"Training data: {len(train_input_ids)} samples, "
-        f"Validation data: {len(val_input_ids) if val_input_ids is not None else 0} samples"
+        f"Training data: {n_train_actual} samples, Validation data: {n_val_actual} samples"
     )
 
     data = DataSplits(
-        train_input_ids=train_input_ids,
-        train_attention_mask=train_attention_mask,
-        train_labels=train_labels,
-        val_input_ids=val_input_ids if has_val else None,
-        val_attention_mask=val_attention_mask if has_val else None,
-        val_labels=val_labels if has_val else None,
-        test_input_ids=test_input_ids,
-        test_attention_mask=test_attention_mask,
-        test_labels=test_labels,
+        train_x=train_x,
+        train_y=train_y,
+        val_x=val_x,
+        val_y=val_y,
+        test_x=test_x,
+        test_y=test_y,
     )
 
     return data, unique_target_ids, rng_key
@@ -2274,7 +2204,7 @@ def _pretrain_fixed_cps(rng_key, config: "Config", data, logger, artifact):
                 train_params.append(False)
     # print DE performance of pretrained CPs
     df_logits = jnp.concat(de_logits, axis=0)
-    metrics = post_pred_performance(df_logits, data.test_labels, key_prefix="test_DE_")
+    metrics = s_model.model.evaluate(df_logits, data.test_y, key_prefix="test_DE_")
     logger.summary.update(metrics)
 
     # Uncertainty metrics for DE
@@ -2438,14 +2368,11 @@ def train(logger, config_dict):
     # sort data for expert sampling, if needed
     if config.train_hyper.ds_sampling == "expert":
         base_model = QwenTextClassificationWrapper(**config.net_kwargs)
-        train_input_ids, train_attention_mask, train_labels = _sort_data_for_expert(
-            rng_key, data, config, base_model
-        )
+        train_x, train_y = _sort_data_for_expert(rng_key, data, config, base_model)
         data = replace(
             data,
-            train_input_ids=train_input_ids,
-            train_attention_mask=train_attention_mask,
-            train_labels=train_labels,
+            train_x=train_x,
+            train_y=train_y,
         )
 
     pretrained_params = [False] * len(config.model_params.cp_fix)
