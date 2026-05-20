@@ -969,7 +969,6 @@ def run_evaluation(
             y,
             n_samples=n_samples,
             use_linspace=use_linspace,
-            average=False,
             key_prefix=key_prefix,
             t_sample_fn=None if use_linspace else t_sample_fn,
         )
@@ -1962,9 +1961,8 @@ def _setup_validation(s_model, data: "DataSplits", batch_size_eval, k):
             if isinstance(s_model, LoRAMixin):
                 params = s_model.set_lora_rho(rho_w=0.0, rho_s=0.0, params=params)  # type: ignore[attr-defined]
             metrics, out = valid_metrics_fn_inner(rng, params)
-            # Ensure all keys from empty_metric are present to satisfy jax.lax.cond
-            full_metrics = empty_metric[0].copy()
-            full_metrics.update(metrics)
+            # Ensure ONLY keys from empty_metric are returned to satisfy jax.lax.cond
+            full_metrics = {k: metrics.get(k, v) for k, v in empty_metric[0].items()}
             return full_metrics, out
 
         def get_best_params(params):

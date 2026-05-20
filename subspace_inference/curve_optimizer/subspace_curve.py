@@ -917,9 +917,6 @@ class CategorySubspace(SubspaceBaseModel):
         "acc": jnp.array(-jnp.inf, dtype=jnp.float32),
         "ece": jnp.array(jnp.inf, dtype=jnp.float32),
         "brier": jnp.array(jnp.inf, dtype=jnp.float32),
-        "mean_loss": jnp.array(jnp.inf, dtype=jnp.float32),
-        "mean_acc": jnp.array(-jnp.inf, dtype=jnp.float32),
-        "mean_ece": jnp.array(jnp.inf, dtype=jnp.float32),
         "bma_ll": jnp.array(-jnp.inf, dtype=jnp.float32),
         "bma_acc": jnp.array(-jnp.inf, dtype=jnp.float32),
         "bma_ece": jnp.array(jnp.inf, dtype=jnp.float32),
@@ -976,18 +973,20 @@ class CategorySubspace(SubspaceBaseModel):
         # Compute per-t-sample metrics
         probs = jax.nn.softmax(logits, axis=-1)
         predictions = jnp.argmax(probs, axis=-1)
-        acc_per_t = jnp.mean(predictions == y[None, :], axis=1)
+        acc_per_t = jnp.mean(predictions == y[None, :], axis=1)  # (n_samples,)
         loss_per_t = -jnp.mean(
             jax.nn.log_softmax(logits, axis=-1)
             * jax.nn.one_hot(y[None, :], logits.shape[-1]),
             axis=-1,
-        )
+        )  # (n_samples,)
 
-        # Add per-t-sample metrics (always averaged for consistency)
-        metrics[f"{key_prefix}mean_loss"] = jnp.mean(loss_per_t)
-        metrics[f"{key_prefix}mean_acc"] = jnp.mean(acc_per_t)
+        # Add per-t-sample metrics (as arrays for plotting, also add averaged versions)
+        metrics[f"{key_prefix}mean_loss"] = loss_per_t  # Array for plotting
+        metrics[f"{key_prefix}mean_acc"] = acc_per_t  # Array for plotting
         # ECE per t-sample is complex, set to zeros for now
-        metrics[f"{key_prefix}mean_ece"] = jnp.array(0.0, dtype=jnp.float32)
+        metrics[f"{key_prefix}mean_ece"] = jnp.zeros_like(
+            acc_per_t
+        )  # Array for plotting
 
         # Add BMA metrics (use uniform BMA as default when weights=None)
         # During training, weights=None, so we use the uniform BMA metrics
@@ -1016,8 +1015,6 @@ class RegressionSubspace(SubspaceBaseModel):
         "loss": jnp.array(jnp.inf, dtype=jnp.float32),
         "mse": jnp.array(jnp.inf, dtype=jnp.float32),
         "mae": jnp.array(jnp.inf, dtype=jnp.float32),
-        "mean_loss": jnp.array(jnp.inf, dtype=jnp.float32),
-        "mean_acc": jnp.array(-jnp.inf, dtype=jnp.float32),  # Proxy for compatibility
         "bma_ll": jnp.array(-jnp.inf, dtype=jnp.float32),
     }
 
@@ -1093,11 +1090,11 @@ class RegressionSubspace(SubspaceBaseModel):
         }
 
         # Always compute per-t-sample metrics for consistency (required by JAX lax.cond)
-        per_t_mse = jnp.mean(jnp.square(logits - y[None, :, None]), axis=1)
-        metrics[f"{key_prefix}mean_loss"] = jnp.mean(per_t_mse)
-        metrics[f"{key_prefix}mean_acc"] = -metrics[
-            f"{key_prefix}mean_loss"
-        ]  # Proxy for compatibility
+        per_t_mse = jnp.mean(
+            jnp.square(logits - y[None, :, None]), axis=1
+        )  # (n_samples,)
+        metrics[f"{key_prefix}mean_loss"] = per_t_mse  # Array for plotting
+        metrics[f"{key_prefix}mean_acc"] = -per_t_mse  # Array for plotting (proxy)
 
         # Add BMA metrics (use uniform BMA as default when weights=None)
         metrics[f"{key_prefix}bma_ll"] = metrics[f"{key_prefix}loss"]
