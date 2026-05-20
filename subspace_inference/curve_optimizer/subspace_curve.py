@@ -16,11 +16,7 @@ from jax.tree_util import register_pytree_node_class
 import math
 import logging
 from subspace_inference.curve_optimizer.utils import (
-    post_pred_performance,
     calibration_error,
-    mutual_information,
-    mean_entropy,
-    entropy,
 )
 
 logger = logging.getLogger(__name__)
@@ -920,15 +916,9 @@ class CategorySubspace(SubspaceBaseModel):
         "acc": jnp.array(-jnp.inf, dtype=jnp.float32),
         "ece": jnp.array(jnp.inf, dtype=jnp.float32),
         "brier": jnp.array(jnp.inf, dtype=jnp.float32),
-        "bma_ll": jnp.array(-jnp.inf, dtype=jnp.float32),
-        "bma_acc": jnp.array(-jnp.inf, dtype=jnp.float32),
-        "bma_ece": jnp.array(jnp.inf, dtype=jnp.float32),
-        "bma_brier": jnp.array(jnp.inf, dtype=jnp.float32),
         # Uncertainty metrics (scalars)
         "mutual_information": jnp.array(0.0, dtype=jnp.float32),
         "mean_entropy": jnp.array(0.0, dtype=jnp.float32),
-        "std_entropy_along_curve": jnp.array(0.0, dtype=jnp.float32),
-        "mean_entropy_along_curve": jnp.array(0.0, dtype=jnp.float32),
     }
 
     # @partial(jit, static_argnums=(0,), donate_argnums=(2,))
@@ -958,13 +948,14 @@ class CategorySubspace(SubspaceBaseModel):
         )
         return jnp.mean(nll), state, out
 
-    def evaluate(self, logits, y, key_prefix="", weights=None):
+    def evaluate(self, logits, y, key_prefix="", weights: None | bool | jnp.ndarray = None):
         """Compute classification metrics from sampled logits.
 
         Args:
             logits: (n_samples, n_data, n_classes) - unnormalized logits
             y: (n_data,) - integer labels
-            weights: (n_samples,) optional BMA weights
+            weights: None/False for no averaging, True for uniform average,
+                or array of shape (n_samples,) for weighted BMA average
             key_prefix: prefix for metric keys
 
         Returns:
@@ -972,67 +963,87 @@ class CategorySubspace(SubspaceBaseModel):
             bma_ll, bma_acc, bma_ece, bma_brier, mutual_information, mean_entropy,
             std_entropy_along_curve, mean_entropy_along_curve)
         """
-        # Use existing utils.post_pred_performance which handles BMA weighting
-        # Convert None weights to False for uniform averaging
-        weights_for_eval = weights if weights is not None else False
-        metrics = post_pred_performance(
-            logits, y, weights=weights_for_eval, key_prefix=key_prefix, num_bins=15
+        # Compute log_softmax for all metrics
+        log_probs = jax.nn.log_softmax(
+            logits, axis=-1
+        )  # (n_samples, n_data, n_classes)
+        # probs = jax.nn.softmax(logits, axis=-1)  # (n_samples, n_data, n_classes)
+
+        # Compute ensemble log_probs based on weights
+        if weights is None or weights is False:
+            # No averaging - use first sample (or could return per-sample metrics)
+            # For compatibility, we use uniform average as fallback
+            post_predict_logits = log_probs  # (n_samples, n_data, n_classes)
+        elif weights is True and logits.dims >= 3:
+            # Uniform average via logsumexp
+            post_predict_logits = jax.nn.logsumexp(log_probs, axis=0) - jnp.log(
+                log_probs.shape[0]
+            )  # (n_data, n_classes)
+        elif weights.shape[0] == logits.shape[0] and logits.dims >= 3:
+            # Weighted average (BMA)
+            post_predict_logits = jax.nn.logsumexp(
+                log_probs, b=weights[:, None, None], axis=0
+            )  # (n_data, n_classes)
+        else:
+            raise ValueError("Invalid weights shape for ensemble averaging.")
+
+        # Compute BMA metrics from ensemble predictions
+        post_acc = jnp.mean(jnp.argmax(post_predict_logits, axis=-1) == y)
+        post_ece = calibration_error(post_predict_logits, y, num_bins=15)
+        ll = (
+            jnp.take_along_axis(post_predict_logits, y[:, None], axis=-1)
+            .squeeze()
+            .mean()
         )
 
-        # Always compute per-t-sample metrics for consistency (required by JAX lax.cond)
-        # Compute per-t-sample metrics
-        probs = jax.nn.softmax(logits, axis=-1)
-        predictions = jnp.argmax(probs, axis=-1)
-        acc_per_t = jnp.mean(predictions == y[None, :], axis=1)  # (n_samples,)
-        loss_per_t = -jnp.mean(
-            jax.nn.log_softmax(logits, axis=-1)
-            * jax.nn.one_hot(y[None, :], logits.shape[-1]),
-            axis=-1,
-        )  # (n_samples,)
+        # Brier score
+        post_predict_probs = jax.nn.softmax(post_predict_logits)
+        true_probs = jax.nn.one_hot(y, post_predict_logits.shape[-1])
+        brier = jnp.mean(jnp.sum((post_predict_probs - true_probs) ** 2, axis=-1))
 
-        # Add per-t-sample metrics (as arrays for plotting, also add averaged versions)
-        metrics[f"{key_prefix}mean_loss"] = loss_per_t  # Array for plotting
-        metrics[f"{key_prefix}mean_acc"] = acc_per_t  # Array for plotting
-        # ECE per t-sample is complex, set to zeros for now
-        metrics[f"{key_prefix}mean_ece"] = jnp.zeros_like(
-            acc_per_t
-        )  # Array for plotting
+        metrics = {
+            f"{key_prefix}ll": ll,
+            f"{key_prefix}acc": post_acc,
+            f"{key_prefix}ece": post_ece,
+            f"{key_prefix}brier": brier,
+        }
 
-        # Add BMA metrics (use uniform BMA as default when weights=None)
-        # During training, weights=None, so we use the uniform BMA metrics
-        metrics[f"{key_prefix}bma_ll"] = metrics.get(
-            f"{key_prefix}ll", jnp.array(-jnp.inf, dtype=jnp.float32)
-        )
-        metrics[f"{key_prefix}bma_acc"] = metrics.get(
-            f"{key_prefix}acc", jnp.array(-jnp.inf, dtype=jnp.float32)
-        )
-        metrics[f"{key_prefix}bma_ece"] = metrics.get(
-            f"{key_prefix}ece", jnp.array(jnp.inf, dtype=jnp.float32)
-        )
-        metrics[f"{key_prefix}bma_brier"] = metrics.get(
-            f"{key_prefix}brier", jnp.array(jnp.inf, dtype=jnp.float32)
-        )
+        # Compute uncertainty metrics
+        
+        if logits.ndim >= 3:
+            uniform_probs = jax.nn.softmax(logits, axis=-1)
 
-        # Compute uncertainty metrics using utility functions
-        metrics[f"{key_prefix}mutual_information"] = mutual_information(
-            logits, weights
-        )  # scalar
-        metrics[f"{key_prefix}mean_entropy"] = mean_entropy(logits, weights)  # scalar
+            # Predictive entropy: H[E[p(y|x)]]
+            avg_probs = uniform_probs.mean(axis=0)  # (n_data, n_classes)
+            entropy_pred = -jnp.sum(
+                avg_probs * jnp.log(avg_probs + 1e-12), axis=-1
+            )  # (n_data,)
 
-        # Per-sample entropy for computing statistics along the curve
-        per_sample_entropy = entropy(logits)  # (n_samples, n_data)
+            # Expected entropy: E[H[p(y|x)]]
+            per_sample_entropy = -jnp.sum(
+                uniform_probs * jnp.log(uniform_probs + 1e-12), axis=-1
+            )  # (n_samples, n_data)
+            expected_nentropy = per_sample_entropy.mean(axis=0)  # (n_data,)
 
-        # Mean entropy along curve (averaged over data points for each sample)
-        mean_entropy_along_curve = jnp.mean(per_sample_entropy, axis=1)  # (n_samples,)
-        metrics[f"{key_prefix}mean_entropy_along_curve"] = (
-            mean_entropy_along_curve  # Array for plotting
-        )
+            # Mutual information: MI = H[E[p(y|x)]] - E[H[p(y|x)]]
+            mi = entropy_pred - expected_nentropy  # (n_data,)
+            metrics[f"{key_prefix}mutual_information"] = jnp.mean(mi)  # scalar
 
-        # Standard deviation of entropy along curve (across samples)
-        metrics[f"{key_prefix}std_entropy_along_curve"] = jnp.std(
-            mean_entropy_along_curve
-        )  # scalar
+            # Mean entropy (predictive entropy averaged over data points)
+            metrics[f"{key_prefix}mean_entropy"] = jnp.mean(entropy_pred)  # scalar
 
+            if weights is not None and weights is not False:
+                # Mean entropy along curve (averaged over data points for each sample)
+                mean_entropy_along_curve = per_sample_entropy.mean(axis=1)  # (n_samples,)
+                metrics[f"{key_prefix}mean_entropy_along_curve"] = (
+                    mean_entropy_along_curve  # Array for plotting
+                )
+        else:
+            # If no samples dimension, set uncertainty metrics to defaults
+            metrics[f"{key_prefix}mutual_information"] = jnp.array(
+                0.0, dtype=jnp.float32
+            )
+            metrics[f"{key_prefix}mean_entropy"] = jnp.array(0.0, dtype=jnp.float32)
         return metrics
 
 
@@ -1042,10 +1053,9 @@ class RegressionSubspace(SubspaceBaseModel):
 
     # Empty metric template for when no validation data is available
     empty_metric = {
-        "loss": jnp.array(jnp.inf, dtype=jnp.float32),
+        "ll": jnp.array(-jnp.inf, dtype=jnp.float32),
         "mse": jnp.array(jnp.inf, dtype=jnp.float32),
         "mae": jnp.array(jnp.inf, dtype=jnp.float32),
-        "bma_ll": jnp.array(-jnp.inf, dtype=jnp.float32),
     }
 
     def __init__(self, out_dist_log_scale=0.0, **kwargs):
@@ -1095,38 +1105,42 @@ class RegressionSubspace(SubspaceBaseModel):
         Args:
             logits: (n_samples, n_data, 1) - predictions
             y: (n_data,) - continuous targets
-            weights: (n_samples,) optional BMA weights
+            weights: None/False for no averaging, True for uniform average,
+                or array of shape (n_samples,) for weighted BMA average
             key_prefix: prefix for metric keys
 
         Returns:
             dict with metrics (mse, mae, loss, mean_loss, bma_ll)
         """
-        # Ensemble prediction
-        if weights is not None:
-            ensemble_pred = jnp.sum(logits * weights[:, None, None], axis=0)
+        assert logits.shape[-1] == 1, "Expected logits shape (n_samples, n_data, 1)"
+        assert y.ndim == 1, "Expected y to be 1D with shape (n_data,)"
+
+        # Compute ensemble prediction based on weights
+        if weights is None or weights is False:
+            # No averaging - use first sample
+            ensemble_pred = logits[0]  # (n_data, 1)
+        elif weights is True and logits.dims >= 3:
+            # Uniform average
+            ensemble_pred = logits.mean(axis=0)  # (n_data, 1)
+        elif weights.shape[0] == logits.shape[0] and logits.dims >= 3:
+            # Weighted average (BMA)
+            ensemble_pred = jnp.sum(
+                logits * weights[:, None, None], axis=0
+            )  # (n_data, 1)
         else:
-            ensemble_pred = jnp.mean(logits, axis=0)
+            raise ValueError("Invalid weights shape for ensemble averaging.")
 
         mse = jnp.mean(jnp.square(ensemble_pred - y[:, None]))
         mae = jnp.mean(jnp.abs(ensemble_pred - y[:, None]))
-
-        # Loss for BMA (use MSE as proxy for -log_prob)
-        loss = mse
+        ll = jax.scipy.stats.norm.logpdf(
+            y, loc=ensemble_pred.squeeze(axis=-1), scale=jnp.exp(self.log_scale) + 1e-8
+        )
 
         metrics = {
             f"{key_prefix}mse": mse,
             f"{key_prefix}mae": mae,
-            f"{key_prefix}loss": loss,
+            f"{key_prefix}ll": ll,
         }
-
-        # Always compute per-t-sample metrics for consistency (required by JAX lax.cond)
-        per_t_mse = jnp.mean(
-            jnp.square(logits - y[None, :, None]), axis=1
-        )  # (n_samples,)
-        metrics[f"{key_prefix}mean_loss"] = per_t_mse  # Array for plotting
-
-        # Add BMA metrics (use uniform BMA as default when weights=None)
-        metrics[f"{key_prefix}bma_ll"] = metrics[f"{key_prefix}loss"]
 
         return metrics
 

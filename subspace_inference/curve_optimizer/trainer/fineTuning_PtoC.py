@@ -792,7 +792,7 @@ def setup_metrics(
         # out: (n_samples, n_valid, output_dim)
 
         # Delegate evaluation to the subspace model
-        metrics = s_model.evaluate(out, y, key_prefix=key_prefix)
+        metrics = s_model.evaluate(out, y, key_prefix=key_prefix, weights=True) # weights=True to make uniform sample averaging
         return metrics, out
 
     return acc_fn
@@ -805,36 +805,27 @@ def setup_metrics(
 
 def _plot_curve_along_t(
     t_space,
-    loss,
-    acc,
-    ece,
+    metrics: dict,
     title="Curve Predictive",
-    loss_label="test_ll",
-    acc_label="test acc",
-    ece_label="test ece",
 ):
     """Create a triple-axis plot of loss / accuracy / ECE along curve parameter *t*.
 
     Returns the matplotlib *Figure*.
     """
     fig, ax = plt.subplots(1, 1, figsize=(4, 3), sharey=True)
-    ax.plot(t_space, -loss, label=loss_label, c=plt.get_cmap("tab10")(0))
-    ax2 = ax.twinx()
-    ax2.plot(t_space, acc, label=acc_label, c=plt.get_cmap("tab10")(1), linestyle="--")
-    ax3 = ax.twinx()
-    ax3.spines["right"].set_position(("outward", 40))
-    ax3.set_frame_on(True)
-    ax3.patch.set_visible(False)
-    ax3.plot(t_space, ece, label=ece_label, c=plt.get_cmap("tab10")(2), linestyle=":")
+    lines = []
+    labels = []
+    for k,v in metrics.items():
+        ax.plot(t_space, v, label=k, c=plt.get_cmap("tab10")(0))
+        ax.set_ylabel(k)
+        line, label = ax.get_legend_handles_labels()
+        lines.extend(line)
+        labels.extend(label)
+        ax = ax.twinx()
+    # ax3.plot(t_space, ece, label=ece_label, c=plt.get_cmap("tab10")(2), linestyle=":")
     ax.set_xlabel("t")
-    ax.set_ylabel("mean log likelihood")
-    ax2.set_ylabel("Accuracy")
-    ax3.set_ylabel("ECE")
     ax.set_title(title)
-    lines, lab1 = ax.get_legend_handles_labels()
-    lines2, lab2 = ax2.get_legend_handles_labels()
-    lines3, lab3 = ax3.get_legend_handles_labels()
-    ax.legend(lines + lines2 + lines3, lab1 + lab2 + lab3, loc="best", fontsize="small")
+    ax.legend(lines, labels, loc="best", fontsize="small")
     plt.tight_layout()
     return fig
 
@@ -923,7 +914,8 @@ def run_evaluation(
         test_x, test_y = data.get("test")
         print("Evaluating test set (k=0)")
         _, logits = _logits(test_x, test_y, n_samples=1, key_prefix="test_")
-        pp = s_model.evaluate(logits, test_y, key_prefix="test_")
+        assert logits.shape[0] == 1, f"Expected single sample for k=0 evaluation, got {logits.shape[0]}"
+        pp = s_model.evaluate(logits[0], test_y, key_prefix="test_", weights=False)
         logger.summary.update({f"{logger_prefix}test_{mk}": v for mk, v in pp.items()})
         return {"test_logits": logits}
 
@@ -956,23 +948,18 @@ def run_evaluation(
                 n_samples=n_samples,
                 key_prefix="train_ppd_",
             )
+            logger.summary.update(train_metrics)
 
-            train_pp = s_model.evaluate(
-                train_logits, train_y, key_prefix="train_ppd_uniform_"
+            train_metric_along_curve = s_model.evaluate(
+                train_logits, train_y, key_prefix="train_", weights=False
             )
-            logger.summary.update(train_pp)
-
-            # Plot train curve (only for classification tasks)
-            if "train_ppd_mean_ece" in train_metrics:
-                fig = _plot_curve_along_t(
-                    t_space,
-                    train_metrics["train_ppd_mean_loss"],
-                    train_metrics["train_ppd_mean_acc"],
-                    train_metrics["train_ppd_mean_ece"],
-                    title="Curve @ Train",
-                )
-                logger.log({"Curve Predictive Train": wandb.Image(fig)})
-                plt.close(fig)
+            fig = _plot_curve_along_t(
+                t_space,
+                train_metric_along_curve,
+                title="Curve @ Train",
+            )
+            logger.log({"Curve Predictive Train": wandb.Image(fig)})
+            plt.close(fig)
 
             if art_logits is not None:
                 # Save train logits artifact
@@ -986,7 +973,7 @@ def run_evaluation(
 
             # unnormalised posterior weights (important use sum instead of mean for normalisation (logsumexp) to get correct weights for different n_samples (with mean, we would imply temperature scaling of the likelihood which is not intended would be log(p(D|\theta)^{1/N})))
             log_like += (
-                -train_metrics["train_ppd_mean_loss"] * train_logits.shape[1]
+                train_metric_along_curve["train_ll"] * train_logits.shape[1]
             )  # un-average NLL (#samples,)
 
         if data.has_val and (
@@ -1000,20 +987,17 @@ def run_evaluation(
                 n_samples=n_samples,
                 key_prefix="val_ppd_",
             )
+            logger.summary.update(val_metrics)
 
-            val_pp = s_model.evaluate(val_logits, val_y, key_prefix="val_ppd_uniform_")
-            logger.summary.update(val_pp)
+            val_metric_along_curve = s_model.evaluate(val_logits, val_y, key_prefix="val_", weights=False)
             # Plot val curve (only for classification tasks)
-            if "val_ppd_mean_ece" in val_metrics:
-                fig = _plot_curve_along_t(
-                    t_space,
-                    val_metrics["val_ppd_mean_loss"],
-                    val_metrics["val_ppd_mean_acc"],
-                    val_metrics["val_ppd_mean_ece"],
-                    title="Curve @ Validation",
-                )
-                logger.log({"Curve Predictive Val": wandb.Image(fig)})
-                plt.close(fig)
+            fig = _plot_curve_along_t(
+                t_space,
+                val_metric_along_curve,
+                title="Curve @ Validation",
+            )
+            logger.log({"Curve Predictive Val": wandb.Image(fig)})
+            plt.close(fig)
 
             if art_logits is not None:
                 # Save val logits artifact
@@ -1026,7 +1010,7 @@ def run_evaluation(
                 print("Saved val logits artifact")
 
             log_like += (
-                -val_metrics["val_ppd_mean_loss"] * val_logits.shape[1]
+                val_metric_along_curve["val_ll"] * val_logits.shape[1]
             )  # un-average NLL
 
         if not jnp.allclose(log_like, 0.0):
@@ -1065,7 +1049,7 @@ def run_evaluation(
 
     # -- Compute test logits (once) --
     use_linspace = curve_sampling_mode != "per_leave"
-    key_prefix = "test_ppd_"
+    key_prefix = "test_ppd_uniform"
     print(
         f"Evaluating test set ({'linspace' if use_linspace else 't_sample'}, "
         f"{n_samples} samples)"
@@ -1078,6 +1062,8 @@ def run_evaluation(
         use_linspace=use_linspace,
         key_prefix=key_prefix,
     )
+    # -- Report test performance --
+    logger.summary.update(test_metrics)
 
     if art_logits is not None:
         # Save test logits artifact
@@ -1091,24 +1077,19 @@ def run_evaluation(
         print("Saved test logits artifact")
 
     # -- Plot test performance along curve (not per_leave) --
+    test_metric_along_curve = s_model.evaluate(test_logits, test_y, key_prefix="test_", weights=False)
     if use_linspace:
         # Only plot for classification tasks (which have mean_ece)
-        if key_prefix + "mean_ece" in test_metrics:
-            fig = _plot_curve_along_t(
-                t_space,
-                test_metrics[key_prefix + "mean_loss"],
-                test_metrics[key_prefix + "mean_acc"],
-                test_metrics[key_prefix + "mean_ece"],
-                title="Final testset",
-            )
-            logger.log({"Curve Predictive": wandb.Image(fig)})
-            plt.close(fig)
+        # if key_prefix + "mean_ece" in test_metrics:
+        fig = _plot_curve_along_t(
+            t_space,
+            test_metric_along_curve,
+            title="Final testset",
+        )
+        logger.log({"Curve Predictive": wandb.Image(fig)})
+        plt.close(fig)
 
-    # -- Report test performance --
-    # Always log uniform-BMA test metrics (includes uncertainty metrics from evaluate())
-    pp = s_model.evaluate(test_logits, test_y, key_prefix=key_prefix + "uniform_")
-    logger.summary.update(pp)
-
+    # -- Report test BMA weighted performance --
     # Weighted metrics (combined mode with posterior weights)
     if curve_sampling_mode.startswith("combined") and weights_all is not None:
         best_weight = weights_all[
@@ -1117,7 +1098,7 @@ def run_evaluation(
 
         # Best temperature was found on val — use it
         pp_w = s_model.evaluate(
-            test_logits, test_y, weights=best_weight, key_prefix=key_prefix
+            test_logits, test_y, weights=best_weight, key_prefix="test_ppd_bma_"
         )
         logger.summary.update(pp_w)
 
