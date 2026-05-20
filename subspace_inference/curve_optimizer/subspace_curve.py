@@ -18,6 +18,9 @@ import logging
 from subspace_inference.curve_optimizer.utils import (
     post_pred_performance,
     calibration_error,
+    mutual_information,
+    mean_entropy,
+    entropy,
 )
 
 logger = logging.getLogger(__name__)
@@ -921,6 +924,11 @@ class CategorySubspace(SubspaceBaseModel):
         "bma_acc": jnp.array(-jnp.inf, dtype=jnp.float32),
         "bma_ece": jnp.array(jnp.inf, dtype=jnp.float32),
         "bma_brier": jnp.array(jnp.inf, dtype=jnp.float32),
+        # Uncertainty metrics (scalars)
+        "mutual_information": jnp.array(0.0, dtype=jnp.float32),
+        "mean_entropy": jnp.array(0.0, dtype=jnp.float32),
+        "std_entropy_along_curve": jnp.array(0.0, dtype=jnp.float32),
+        "mean_entropy_along_curve": jnp.array(0.0, dtype=jnp.float32),
     }
 
     # @partial(jit, static_argnums=(0,), donate_argnums=(2,))
@@ -960,7 +968,9 @@ class CategorySubspace(SubspaceBaseModel):
             key_prefix: prefix for metric keys
 
         Returns:
-            dict with metrics (ll, acc, ece, brier, mean_loss, mean_acc, mean_ece, bma_ll, bma_acc, bma_ece, bma_brier)
+            dict with metrics (ll, acc, ece, brier, mean_loss, mean_acc, mean_ece,
+            bma_ll, bma_acc, bma_ece, bma_brier, mutual_information, mean_entropy,
+            std_entropy_along_curve, mean_entropy_along_curve)
         """
         # Use existing utils.post_pred_performance which handles BMA weighting
         # Convert None weights to False for uniform averaging
@@ -1002,6 +1012,26 @@ class CategorySubspace(SubspaceBaseModel):
         metrics[f"{key_prefix}bma_brier"] = metrics.get(
             f"{key_prefix}brier", jnp.array(jnp.inf, dtype=jnp.float32)
         )
+
+        # Compute uncertainty metrics using utility functions
+        metrics[f"{key_prefix}mutual_information"] = mutual_information(
+            logits, weights
+        )  # scalar
+        metrics[f"{key_prefix}mean_entropy"] = mean_entropy(logits, weights)  # scalar
+
+        # Per-sample entropy for computing statistics along the curve
+        per_sample_entropy = entropy(logits)  # (n_samples, n_data)
+
+        # Mean entropy along curve (averaged over data points for each sample)
+        mean_entropy_along_curve = jnp.mean(per_sample_entropy, axis=1)  # (n_samples,)
+        metrics[f"{key_prefix}mean_entropy_along_curve"] = (
+            mean_entropy_along_curve  # Array for plotting
+        )
+
+        # Standard deviation of entropy along curve (across samples)
+        metrics[f"{key_prefix}std_entropy_along_curve"] = jnp.std(
+            mean_entropy_along_curve
+        )  # scalar
 
         return metrics
 
@@ -1069,7 +1099,7 @@ class RegressionSubspace(SubspaceBaseModel):
             key_prefix: prefix for metric keys
 
         Returns:
-            dict with metrics (mse, mae, loss, mean_loss, mean_acc, bma_ll)
+            dict with metrics (mse, mae, loss, mean_loss, bma_ll)
         """
         # Ensemble prediction
         if weights is not None:
@@ -1094,7 +1124,6 @@ class RegressionSubspace(SubspaceBaseModel):
             jnp.square(logits - y[None, :, None]), axis=1
         )  # (n_samples,)
         metrics[f"{key_prefix}mean_loss"] = per_t_mse  # Array for plotting
-        metrics[f"{key_prefix}mean_acc"] = -per_t_mse  # Array for plotting (proxy)
 
         # Add BMA metrics (use uniform BMA as default when weights=None)
         metrics[f"{key_prefix}bma_ll"] = metrics[f"{key_prefix}loss"]

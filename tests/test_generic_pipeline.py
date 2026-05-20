@@ -18,7 +18,6 @@ from subspace_inference.curve_optimizer.datasets.toy_regression import (
 
 def test_toy_pipeline():
     # Initialize wandb in offline mode for testing
-    os.environ["WANDB_MODE"] = "offline"
     wandb.init(project="toy_test")
 
     # 1. Load data

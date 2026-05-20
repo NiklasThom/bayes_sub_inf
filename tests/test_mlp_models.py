@@ -20,8 +20,6 @@ from subspace_inference.curve_optimizer.datasets.toy_regression import (
 
 def test_mlp_model():
     """Test standard MLP model with regression task."""
-    os.environ["WANDB_MODE"] = "offline"
-    wandb.init(project="mlp_test")
 
     x, y, _ = load_toy_regression_dataset(n_samples=1000)
     data = DataSplits(
@@ -65,6 +63,7 @@ def test_mlp_model():
         },
     }
 
+    wandb.init(project="mlp_test", config=config_dict)
     config = Config.from_dict(config_dict, data)
 
     rng_key = random.PRNGKey(0)
@@ -89,8 +88,6 @@ def test_mlp_model():
 
 def test_mlp_feature_model():
     """Test MLP feature model with polynomial features."""
-    os.environ["WANDB_MODE"] = "offline"
-    wandb.init(project="mlp_feature_test")
 
     x, y, _ = load_toy_regression_dataset(n_samples=1000)
     data = DataSplits(
@@ -133,6 +130,7 @@ def test_mlp_feature_model():
         },
     }
 
+    wandb.init(project="mlp_feature_test", config=config_dict)
     config = Config.from_dict(config_dict, data)
 
     rng_key = random.PRNGKey(0)
@@ -158,5 +156,5 @@ def test_mlp_feature_model():
 
 
 if __name__ == "__main__":
-    test_mlp_model()
+    # test_mlp_model()
     test_mlp_feature_model()

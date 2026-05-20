@@ -52,7 +52,6 @@ def create_toy_image_dataset(n_samples=1000):
 
 def test_lenet_model():
     """Test standard LeNet model with classification task."""
-    os.environ["WANDB_MODE"] = "offline"
     wandb.init(project="lenet_test")
 
     x, y = create_toy_image_dataset(n_samples=1000)
@@ -121,7 +120,6 @@ def test_lenet_model():
 
 def test_lenetti_model():
     """Test simple LeNetti model with classification task."""
-    os.environ["WANDB_MODE"] = "offline"
     wandb.init(project="lenetti_test")
 
     x, y = create_toy_image_dataset(n_samples=1000)

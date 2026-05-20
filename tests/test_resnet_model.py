@@ -50,7 +50,6 @@ def create_toy_image_dataset(n_samples=1000):
 
 def test_resnet_model():
     """Test ResNet model with classification task."""
-    os.environ["WANDB_MODE"] = "offline"
     wandb.init(project="resnet_test")
 
     x, y = create_toy_image_dataset(n_samples=1000)

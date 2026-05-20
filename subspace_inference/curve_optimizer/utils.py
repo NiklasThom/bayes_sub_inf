@@ -158,6 +158,77 @@ def post_pred_performance(
     }
 
 
+def mutual_information(logits, weights: jnp.ndarray | None = None):
+    """Compute mutual information from logits over samples.
+
+    Args:
+        logits: jnp.ndarray of shape (n_samples, n_data, n_classes)
+        weights: Optional array of shape (n_samples,) for weighted averaging
+
+    Returns:
+        mi: float mutual information averaged over each data point
+    """
+    use_weights = weights is not None
+    probs = jax.nn.softmax(logits, axis=-1)  # (n_samples, n_data, n_classes)
+    if use_weights:
+        avg_probs = jnp.sum(
+            probs * weights[:, None, None], axis=0
+        )  # (n_data, n_classes)
+    else:
+        avg_probs = jnp.mean(probs, axis=0)  # (n_data, n_classes)
+    entropy_pred = -jnp.sum(
+        avg_probs * jnp.log(avg_probs + 1e-12), axis=-1
+    )  # (n_data,)
+    if use_weights:
+        expected_nentropy = jnp.sum(
+            -jnp.sum(probs * jnp.log(probs + 1e-12), axis=-1) * weights[:, None], axis=0
+        )  # (n_data,)
+    else:
+        expected_nentropy = jnp.mean(
+            -jnp.sum(probs * jnp.log(probs + 1e-12), axis=-1), axis=0
+        )  # (n_data,)
+    mi = entropy_pred - expected_nentropy  # (n_data,)
+    return jnp.mean(mi)
+
+
+def mean_entropy(logits, weights: jnp.ndarray | None = None):
+    """Compute curve entropy from logits over samples.
+
+    Args:
+        logits: jnp.ndarray of shape (n_samples, n_data, n_classes)
+        weights: Optional array of shape (n_samples,) for weighted averaging
+
+    Returns:
+        entropy: float predictive entropy averaged over each data point
+    """
+    use_weights = weights is not None
+    probs = jax.nn.softmax(logits, axis=-1)  # (n_samples, n_data, n_classes)
+    if use_weights:
+        avg_probs = jnp.sum(
+            probs * weights[:, None, None], axis=0
+        )  # (n_data, n_classes)
+    else:
+        avg_probs = jnp.mean(probs, axis=0)  # (n_data, n_classes)
+    entropy_pred = -jnp.sum(
+        avg_probs * jnp.log(avg_probs + 1e-12), axis=-1
+    )  # (n_data,)
+    return jnp.mean(entropy_pred)
+
+
+def entropy(logits):
+    """Compute per-sample entropy from logits.
+
+    Args:
+        logits: jnp.ndarray of shape (n_samples, n_data, n_classes)
+
+    Returns:
+        entropies: jnp.ndarray of shape (n_samples, n_data)
+    """
+    probs = jax.nn.softmax(logits, axis=-1)
+    entropies = -jnp.sum(probs * jnp.log(probs + 1e-12), axis=-1)
+    return entropies  # (n_samples, n_data)
+
+
 def load_fn(m, p, pl):
     """Merge a loaded parameter into the current pytree leaf based on the train mask."""
     if m:
