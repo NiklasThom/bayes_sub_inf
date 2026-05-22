@@ -104,33 +104,6 @@ class DataSplits:
         return mapping.get(name, (None, None))
 
 
-def _empty_val_metric():
-    """Sentinel validation metrics used when no validation data is available."""
-    return (
-        {
-            # Classification metrics (from post_pred_performance)
-            "val_ll": jnp.array(-jnp.inf, dtype=jnp.float32),
-            "val_acc": jnp.array(-jnp.inf, dtype=jnp.float32),
-            "val_ece": jnp.array(jnp.inf, dtype=jnp.float32),
-            "val_brier": jnp.array(jnp.inf, dtype=jnp.float32),
-            # Per-t-sample metrics (always returned by evaluate)
-            "val_mean_loss": jnp.array(jnp.inf, dtype=jnp.float32),
-            "val_mean_acc": jnp.array(-jnp.inf, dtype=jnp.float32),
-            "val_mean_ece": jnp.array(jnp.inf, dtype=jnp.float32),
-            # BMA metrics (computed separately)
-            "val_bma_ll": jnp.array(-jnp.inf, dtype=jnp.float32),
-            "val_bma_acc": jnp.array(-jnp.inf, dtype=jnp.float32),
-            "val_bma_ece": jnp.array(jnp.inf, dtype=jnp.float32),
-            "val_bma_brier": jnp.array(jnp.inf, dtype=jnp.float32),
-            # Regression metrics (for compatibility)
-            "val_loss": jnp.array(jnp.inf, dtype=jnp.float32),
-            "val_mse": jnp.array(jnp.inf, dtype=jnp.float32),
-            "val_mae": jnp.array(jnp.inf, dtype=jnp.float32),
-        },
-        None,
-    )
-
-
 @dataclass
 class TrainHyperparams:
     """Pure training hyperparameters for the pipeline.
@@ -792,7 +765,9 @@ def setup_metrics(
         # out: (n_samples, n_valid, output_dim)
 
         # Delegate evaluation to the subspace model
-        metrics = s_model.evaluate(out, y, key_prefix=key_prefix, weights=True) # weights=True to make uniform sample averaging
+        metrics = s_model.evaluate(
+            out, y, key_prefix=key_prefix, weights=True
+        )  # weights=True to make uniform sample averaging
         return metrics, out
 
     return acc_fn
@@ -815,8 +790,11 @@ def _plot_curve_along_t(
     fig, ax = plt.subplots(1, 1, figsize=(4, 3), sharey=True)
     lines = []
     labels = []
-    for k,v in metrics.items():
-        ax.plot(t_space, v, label=k, c=plt.get_cmap("tab10")(0))
+    for i, (k, v) in enumerate(metrics.items()):
+        print(f"Plotting metric {k} with values {v.shape}")
+        if v.ndim == 0:
+            continue
+        ax.plot(t_space, v, label=k, c=plt.get_cmap("tab10")(i))
         ax.set_ylabel(k)
         line, label = ax.get_legend_handles_labels()
         lines.extend(line)
@@ -914,7 +892,9 @@ def run_evaluation(
         test_x, test_y = data.get("test")
         print("Evaluating test set (k=0)")
         _, logits = _logits(test_x, test_y, n_samples=1, key_prefix="test_")
-        assert logits.shape[0] == 1, f"Expected single sample for k=0 evaluation, got {logits.shape[0]}"
+        assert logits.shape[0] == 1, (
+            f"Expected single sample for k=0 evaluation, got {logits.shape[0]}"
+        )
         pp = s_model.evaluate(logits[0], test_y, key_prefix="test_", weights=False)
         logger.summary.update({f"{logger_prefix}test_{mk}": v for mk, v in pp.items()})
         return {"test_logits": logits}
@@ -989,7 +969,9 @@ def run_evaluation(
             )
             logger.summary.update(val_metrics)
 
-            val_metric_along_curve = s_model.evaluate(val_logits, val_y, key_prefix="val_", weights=False)
+            val_metric_along_curve = s_model.evaluate(
+                val_logits, val_y, key_prefix="val_", weights=False
+            )
             # Plot val curve (only for classification tasks)
             fig = _plot_curve_along_t(
                 t_space,
@@ -1299,7 +1281,7 @@ def _make_train_batch_fn(
         )
 
         # Check for best params
-        val_ll = metrics["val_bma_ll"]
+        val_ll = metrics.get("val_ll", best_val_ll)
         is_better = val_ll > best_val_ll
 
         best_params = jax.lax.cond(
@@ -1387,7 +1369,7 @@ def _make_expert_step_fn(env: "TrainingEnv", config: "Config", *, window_size):
         )
 
         # Check for best params
-        val_ll = metrics["val_bma_ll"]
+        val_ll = metrics.get("val_ll", best_val_ll)
         is_better = val_ll > best_val_ll
 
         best_params = jax.lax.cond(

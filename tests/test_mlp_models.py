@@ -151,6 +151,8 @@ def test_mlp_feature_model():
         logger=wandb,
     )
 
+    # costum evaluation
+
     print("MLP Feature model test successful!")
     wandb.finish()
 

@@ -948,58 +948,59 @@ class CategorySubspace(SubspaceBaseModel):
         )
         return jnp.mean(nll), state, out
 
-    def evaluate(self, logits, y, key_prefix="", weights: None | bool | jnp.ndarray = None):
+    def evaluate(
+        self, logits, y, key_prefix="", weights: None | bool | jnp.ndarray = None
+    ):
         """Compute classification metrics from sampled logits.
 
         Args:
             logits: (n_samples, n_data, n_classes) - unnormalized logits
             y: (n_data,) - integer labels
-            weights: None/False for no averaging, True for uniform average,
-                or array of shape (n_samples,) for weighted BMA average
+            weights: None/False for no averaging (returns per-sample metrics),
+                True for uniform average, or array of shape (n_samples,) for weighted BMA average
             key_prefix: prefix for metric keys
 
         Returns:
-            dict with metrics (ll, acc, ece, brier, mean_loss, mean_acc, mean_ece,
-            bma_ll, bma_acc, bma_ece, bma_brier, mutual_information, mean_entropy,
-            std_entropy_along_curve, mean_entropy_along_curve)
+            dict with metrics. When weights=False, returns per-sample metrics with shape (n_samples,).
+            When weights=True or array, returns scalar metrics (except ECE which is always scalar).
         """
         # Compute log_softmax for all metrics
         log_probs = jax.nn.log_softmax(
             logits, axis=-1
         )  # (n_samples, n_data, n_classes)
-        # probs = jax.nn.softmax(logits, axis=-1)  # (n_samples, n_data, n_classes)
 
         # Compute ensemble log_probs based on weights
         if weights is None or weights is False:
             # No averaging - use first sample (or could return per-sample metrics)
             # For compatibility, we use uniform average as fallback
             post_predict_logits = log_probs  # (n_samples, n_data, n_classes)
-        elif weights is True and logits.dims >= 3:
+        elif weights is True and logits.ndim >= 3:
             # Uniform average via logsumexp
             post_predict_logits = jax.nn.logsumexp(log_probs, axis=0) - jnp.log(
                 log_probs.shape[0]
             )  # (n_data, n_classes)
-        elif weights.shape[0] == logits.shape[0] and logits.dims >= 3:
+        elif weights.shape[0] == logits.shape[0] and logits.ndim >= 3:
             # Weighted average (BMA)
             post_predict_logits = jax.nn.logsumexp(
                 log_probs, b=weights[:, None, None], axis=0
             )  # (n_data, n_classes)
         else:
             raise ValueError("Invalid weights shape for ensemble averaging.")
+        print("post_predict_logits shape:", post_predict_logits.shape)
 
         # Compute BMA metrics from ensemble predictions
-        post_acc = jnp.mean(jnp.argmax(post_predict_logits, axis=-1) == y)
-        post_ece = calibration_error(post_predict_logits, y, num_bins=15)
-        ll = (
-            jnp.take_along_axis(post_predict_logits, y[:, None], axis=-1)
-            .squeeze()
-            .mean()
-        )
+        post_acc = jnp.mean(jnp.argmax(post_predict_logits, axis=-1) == y, axis=-1)
+        if post_predict_logits.ndim == 3:
+            ll = jnp.take_along_axis(log_probs, y[None, :, None], axis=-1).squeeze(-1).mean(axis=-1)  # (n_samples,)
+            post_ece = jax.vmap(calibration_error, in_axes=(0, None, None))(post_predict_logits, y, 15)
+        else:
+            post_ece = calibration_error(post_predict_logits, y, num_bins=15)
+            ll = jnp.take_along_axis(post_predict_logits, y[:, None], axis=-1).squeeze(-1).mean(axis=-1) # scalar
 
         # Brier score
         post_predict_probs = jax.nn.softmax(post_predict_logits)
         true_probs = jax.nn.one_hot(y, post_predict_logits.shape[-1])
-        brier = jnp.mean(jnp.sum((post_predict_probs - true_probs) ** 2, axis=-1))
+        brier = jnp.mean(jnp.sum((post_predict_probs - true_probs) ** 2, axis=-1), axis=-1)
 
         metrics = {
             f"{key_prefix}ll": ll,
@@ -1105,12 +1106,13 @@ class RegressionSubspace(SubspaceBaseModel):
         Args:
             logits: (n_samples, n_data, 1) - predictions
             y: (n_data,) - continuous targets
-            weights: None/False for no averaging, True for uniform average,
-                or array of shape (n_samples,) for weighted BMA average
+            weights: None/False for no averaging (returns per-sample metrics),
+                True for uniform average, or array of shape (n_samples,) for weighted BMA average
             key_prefix: prefix for metric keys
 
         Returns:
-            dict with metrics (mse, mae, loss, mean_loss, bma_ll)
+            dict with metrics. When weights=False, returns per-sample metrics with shape (n_samples,).
+            When weights=True or array, returns scalar metrics.
         """
         assert logits.shape[-1] == 1, "Expected logits shape (n_samples, n_data, 1)"
         assert y.ndim == 1, "Expected y to be 1D with shape (n_data,)"
@@ -1118,22 +1120,27 @@ class RegressionSubspace(SubspaceBaseModel):
         # Compute ensemble prediction based on weights
         if weights is None or weights is False:
             # No averaging - use first sample
-            ensemble_pred = logits[0]  # (n_data, 1)
-        elif weights is True and logits.dims >= 3:
+            ensemble_pred = logits  # (n_data, 1)
+        elif weights is True and logits.ndim >= 3:
             # Uniform average
             ensemble_pred = logits.mean(axis=0)  # (n_data, 1)
-        elif weights.shape[0] == logits.shape[0] and logits.dims >= 3:
+        elif weights.shape[0] == logits.shape[0] and logits.ndim >= 3:
             # Weighted average (BMA)
             ensemble_pred = jnp.sum(
                 logits * weights[:, None, None], axis=0
             )  # (n_data, 1)
         else:
             raise ValueError("Invalid weights shape for ensemble averaging.")
+        ensemble_pred = ensemble_pred.squeeze(axis=-1)  # (n_data,) or (n_samples, n_data)
 
-        mse = jnp.mean(jnp.square(ensemble_pred - y[:, None]))
-        mae = jnp.mean(jnp.abs(ensemble_pred - y[:, None]))
-        ll = jax.scipy.stats.norm.logpdf(
-            y, loc=ensemble_pred.squeeze(axis=-1), scale=jnp.exp(self.log_scale) + 1e-8
+        mse = jnp.mean(jnp.square(ensemble_pred - y), axis=-1)
+        mae = jnp.mean(jnp.abs(ensemble_pred - y), axis=-1)
+        ll = jnp.mean(
+            jax.scipy.stats.norm.logpdf(
+                y,
+                loc=ensemble_pred,
+                scale=jnp.exp(self.log_scale) + 1e-8
+            ), axis=-1
         )
 
         metrics = {

@@ -36,8 +36,9 @@ def test_toy_pipeline():
         "rng_seed": 42,
         "net_kwargs": {
             "model_type": "mlp",
-            "hidden_dim": 32,
-            "out_dim": 1,
+            "depth": 3,
+            "width": 32,
+            "output_dim": 1,
         },
         "train_hyper": {
             "batch_size": 10,

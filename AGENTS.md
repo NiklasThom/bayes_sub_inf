@@ -62,12 +62,24 @@ class MyModel(nn.Module):
         return x
 ```
 
-2. Register it in `subspace_inference/curve_optimizer/models/__init__.py`:
+2. Register it using the `@register_model` decorator in your model file:
 ```python
-from subspace_inference.curve_optimizer.models.my_model import MyModel
+from subspace_inference.curve_optimizer.models import register_model
 
-MODEL_REGISTRY["my_model"] = MyModel
+@register_model("my_model")
+class MyModel(nn.Module):
+    hidden_dim: int = 64
+    out_dim: int = 1
+
+    @nn.compact
+    def __call__(self, x, train: bool = True):
+        x = nn.Dense(self.hidden_dim)(x)
+        x = nn.relu(x)
+        x = nn.Dense(self.out_dim)(x)
+        return x
 ```
+
+The decorator automatically registers the model in `MODEL_REGISTRY`.
 
 3. Use in config:
 ```python
@@ -97,11 +109,31 @@ class MyTaskSubspace(SubspaceBaseModel):
         # ... compute loss ...
         return loss, state, out
     
-    def evaluate(self, logits, y, key_prefix="", average=True, weights=None):
+    def evaluate(self, logits, y, key_prefix="", weights=None):
         # Define task-specific metrics
         # logits: (n_samples, n_data, output_dim)
         # y: (n_data, ...)
+        # weights: (n_samples,) optional BMA weights
         # Returns dict with metrics
+        
+        # Always return the same keys for JAX lax.cond compatibility
+        # Define empty_metric class attribute with all required keys
+        ...
+```
+
+2. Define `empty_metric` class attribute with all metric keys (required for JAX consistency):
+```python
+@register_subspace_model("my_task")
+class MyTaskSubspace(SubspaceBaseModel):
+    empty_metric = {
+        "ll": jnp.array(-jnp.inf),
+        "acc": jnp.array(-jnp.inf),
+        "mean_loss": jnp.array(jnp.inf),
+        # ... all other metric keys ...
+    }
+    
+    def evaluate(self, logits, y, key_prefix="", weights=None):
+        # Compute and return metrics
         ...
 ```
 
@@ -124,3 +156,5 @@ config = {
 - The `evaluate()` method receives sampled logits with shape `(n_samples, n_data, output_dim)`
 - For classification, logits are unnormalized (use softmax for probabilities)
 - For regression, logits are direct predictions
+- Models must accept `train: bool = True` parameter for API compatibility
+- Subspace models must define `empty_metric` class attribute for JAX consistency
