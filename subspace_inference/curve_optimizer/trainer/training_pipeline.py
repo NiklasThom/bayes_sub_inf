@@ -1980,12 +1980,12 @@ def _pretrain_fixed_cps(rng_key, config: "Config", data, logger, artifact):
                 # copies never exist in memory simultaneously.
                 del params
                 rng_key, init_key = random.split(rng_key)
-                params = _init_subspace_params(pt_config, env.s_model, init_key)
+                params = _init_subspace_params(pt_config, env.s_model, init_key, data)
             else:
                 train_params.append(False)
     # print DE performance of pretrained CPs
     df_logits = jnp.concat(de_logits, axis=0)
-    metrics = s_model.evaluate(df_logits, data.test_y, key_prefix="test_DE_")
+    metrics = env.s_model.evaluate(df_logits, data.test_y, key_prefix="test_DE_")
     logger.summary.update(metrics)
 
     if config.train_hyper.save_params:
@@ -1995,7 +1995,7 @@ def _pretrain_fixed_cps(rng_key, config: "Config", data, logger, artifact):
         print("Saved pretrained parameters to tmp_files")
         artifact.add_file(f"tmp_files/{logger.id}_pretrained_params.npy")
 
-    return train_params, rng_key
+    return env, train_params, rng_key
 
 
 def _train_full_curve(rng_key, config: "Config", data, train_params, logger, artifact):
@@ -2183,8 +2183,9 @@ def train(logger, config: Config, data: DataSplits):
 
     # Pretraining fixed control points (if any)
     pretrained_params = [False] * len(config.model_params.cp_fix)
+    env = None
     if any(config.model_params.cp_fix):
-        pretrained_params, rng_key = _pretrain_fixed_cps(
+        env, pretrained_params, rng_key = _pretrain_fixed_cps(
             rng_key, config, data, logger, artifact
         )
 
@@ -2193,6 +2194,11 @@ def train(logger, config: Config, data: DataSplits):
         env, params, rng_key = _train_full_curve(
             rng_key, config, data, pretrained_params, logger, artifact
         )
+    else:
+        assert pretrained_params[0] is not False, "Expected pretrained parameters for the single control point, but got False."
+        assert len(pretrained_params) == 1, f"Expected exactly one set of pretrained parameters for single control point, but got {len(pretrained_params)}."
+        # If only one CP, skip the full curve training phase since it's redundant
+        params = {'params': pretrained_params[0]}
 
     # Log artifact if enabled
     if config.train_hyper.save_params and artifact:

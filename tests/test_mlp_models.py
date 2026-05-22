@@ -15,37 +15,6 @@ from subspace_inference.curve_optimizer.datasets.toy_regression import (
 )
 
 
-def train_generic(logger, config_dict):
-    """Generic training function for any model type (MLP, Qwen, etc.).
-
-    This function handles model initialization and data setup for models that are
-    created from scratch (like MLP) rather than loaded from artifacts (like Qwen),
-    then calls the generic train() function.
-
-    Args:
-        logger: wandb logger for logging metrics
-        config_dict: Configuration dictionary with all training parameters
-
-    Returns:
-        (env, params, config) for further evaluation
-    """
-    # Create DataSplits from config_dict
-    data = DataSplits(
-        train_x=config_dict.get("train_x"),
-        train_y=config_dict.get("train_y"),
-        val_x=config_dict.get("val_x"),
-        val_y=config_dict.get("val_y"),
-        test_x=config_dict.get("test_x"),
-        test_y=config_dict.get("test_y"),
-    )
-
-    # Create config with data
-    config = Config.from_dict(config_dict, data)
-
-    # Call generic train function
-    return train(logger, config, data)
-
-
 def test_mlp_model():
     """Test standard MLP model with regression task."""
 
@@ -88,20 +57,18 @@ def test_mlp_model():
             "name": "adam",
             "kwargs": {"learning_rate": 1e-3},
             "freeze_other_params": False,
-        },
-        # Data splits for training
-        "train_x": x[:500],
-        "train_y": y[:500],
-        "val_x": x[500:750],
-        "val_y": y[500:750],
-        "test_x": x[750:],
-        "test_y": y[750:],
+        }
     }
 
-    wandb.init(project="mlp_test", config=config_dict)
+    logger = wandb.init(project="mlp_test", config=config_dict)
 
     print("Starting MLP training...")
-    env, params, config = train_generic(wandb, config_dict)
+
+    # Create config with data
+    config = Config.from_dict(config_dict, data)
+
+    # Call generic train function
+    env, params, config = train(logger, config, data)
 
     print("Starting MLP evaluation and plotting...")
     s_model = env.s_model
@@ -144,6 +111,9 @@ def test_mlp_feature_model():
     """Test MLP feature model with polynomial features."""
 
     x, y, _ = load_toy_regression_dataset(n_samples=1000)
+    shuffle_idx = jax.random.permutation(random.PRNGKey(0), x.shape[0])
+    x = x[shuffle_idx]
+    y = y[shuffle_idx]
     data = DataSplits(
         train_x=x[:500],
         train_y=y[:500],
@@ -152,56 +122,55 @@ def test_mlp_feature_model():
         test_x=x[750:],
         test_y=y[750:],
     )
+    print("Data shapes:", data.train_x.shape, data.train_y.shape)
 
     config_dict = {
         "rng_seed": 42,
         "net_kwargs": {
             "model_type": "mlp_feature",
-            "depth": 2,
+            "depth": 4,
             "width": 32,
         },
         "train_hyper": {
             "batch_size": 10,
-            "num_epochs": 2,
+            "num_epochs": 4,
             "eval_every_n_batch": 5,
             "save_params": False,
             "smoke_test": False,
         },
         "model_params": {
-            "num_curve_segment": 1,
+            "num_curve_segment": 0,
             "SegDeg": 1,
-            "Pretraining": False,
+            "Pretraining": True,
             "subspace_model": "regression",
-            "weight_decay": 1e-4,
+            "weight_decay": 1e-5,
             "curve_sampling_mode": "combined_noBMA",
             "filter_masks": [{"keys": ["Dense_0", "kernel"], "op": "all"}],
             "lora_params": None,
         },
         "optimizer_conf": {
             "name": "adam",
-            "kwargs": {"learning_rate": 1e-3},
+            "kwargs": {"learning_rate": 5e-4},
             "freeze_other_params": False,
-        },
-        # Data splits for training
-        "train_x": x[:500],
-        "train_y": y[:500],
-        "val_x": x[500:750],
-        "val_y": y[500:750],
-        "test_x": x[750:],
-        "test_y": y[750:],
+        }
     }
 
-    wandb.init(project="mlp_feature_test", config=config_dict)
+    logger = wandb.init(project="mlp_feature_test", config=config_dict)
 
     print("Starting MLP Feature training...")
-    env, params, config = train_generic(wandb, config_dict)
+    # Create config with data
+    config = Config.from_dict(config_dict, data)
+
+    # Call generic train function
+    env, params, config = train(logger, config, data)
+    print(params)
 
     print("Starting MLP Feature evaluation and plotting...")
     s_model = env.s_model
 
     # Create prediction grid
     t_space = jnp.linspace(0, 1, 100)
-    x_lin = jnp.linspace(-3, 3, 100)[:, None]
+    x_lin = jnp.linspace(x.min()-0.5, x.max()+0.5, 100)[:, None]
 
     # Get predictions at all t values
     # Note: s_model.__call__ expects the inner params dict (params["params"])
