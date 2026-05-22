@@ -1,21 +1,49 @@
 """Test MLP models with subspace inference framework."""
 
-import os
 import jax
 import jax.numpy as jnp
 from jax import random
-import numpy as np
+import matplotlib.pyplot as plt
 import wandb
-from subspace_inference.curve_optimizer.trainer.fineTuning_PtoC import (
+from subspace_inference.curve_optimizer.trainer.training_pipeline import (
     Config,
     DataSplits,
-    _setup_training_env,
-    run_training,
-    run_evaluation,
+    train,
 )
 from subspace_inference.curve_optimizer.datasets.toy_regression import (
     load_toy_regression_dataset,
 )
+
+
+def train_generic(logger, config_dict):
+    """Generic training function for any model type (MLP, Qwen, etc.).
+
+    This function handles model initialization and data setup for models that are
+    created from scratch (like MLP) rather than loaded from artifacts (like Qwen),
+    then calls the generic train() function.
+
+    Args:
+        logger: wandb logger for logging metrics
+        config_dict: Configuration dictionary with all training parameters
+
+    Returns:
+        (env, params, config) for further evaluation
+    """
+    # Create DataSplits from config_dict
+    data = DataSplits(
+        train_x=config_dict.get("train_x"),
+        train_y=config_dict.get("train_y"),
+        val_x=config_dict.get("val_x"),
+        val_y=config_dict.get("val_y"),
+        test_x=config_dict.get("test_x"),
+        test_y=config_dict.get("test_y"),
+    )
+
+    # Create config with data
+    config = Config.from_dict(config_dict, data)
+
+    # Call generic train function
+    return train(logger, config, data)
 
 
 def test_mlp_model():
@@ -61,26 +89,52 @@ def test_mlp_model():
             "kwargs": {"learning_rate": 1e-3},
             "freeze_other_params": False,
         },
+        # Data splits for training
+        "train_x": x[:500],
+        "train_y": y[:500],
+        "val_x": x[500:750],
+        "val_y": y[500:750],
+        "test_x": x[750:],
+        "test_y": y[750:],
     }
 
     wandb.init(project="mlp_test", config=config_dict)
-    config = Config.from_dict(config_dict, data)
-
-    rng_key = random.PRNGKey(0)
-    env, params, rng_key = _setup_training_env(config, data, rng_key)
 
     print("Starting MLP training...")
-    rng_key, params, _ = run_training(rng_key, env, params, data, config, wandb, "mlp_")
+    env, params, config = train_generic(wandb, config_dict)
 
-    print("Starting MLP evaluation...")
-    run_evaluation(
-        rng_key=rng_key,
-        env=env,
-        params=params,
-        data=data,
-        config=config,
-        logger=wandb,
-    )
+    print("Starting MLP evaluation and plotting...")
+    s_model = env.s_model
+
+    # Create prediction grid
+    t_space = jnp.linspace(0, 1, 100)
+    x_lin = jnp.linspace(-3, 3, 100)[:, None]
+
+    # Get predictions at all t values
+    # Note: s_model.__call__ expects the inner params dict (params["params"])
+    def predict_at_t(t_single):
+        out, _ = s_model(
+            params["params"], {}, t_single, x_lin, train=False, key=random.PRNGKey(0)
+        )
+        return out.squeeze(axis=-1)
+
+    out = jax.vmap(predict_at_t)(t_space)  # (100, 100)
+
+    # Plot
+    fig, ax = plt.subplots(figsize=(8, 6))
+    colors = plt.cm.viridis(t_space)
+    for o, c in zip(out, colors):
+        ax.plot(x_lin, o, color=c, alpha=0.3)
+    ax.plot(x_lin, out.mean(axis=0), label="mean", c="red", linewidth=2, alpha=0.8)
+    ax.plot(data.test_x, data.test_y, "o", label="test", alpha=0.5, markersize=4)
+    ax.legend()
+    ax.set_xlabel("x")
+    ax.set_ylabel("y")
+    ax.set_title("MLP Regression Curve")
+
+    # Log to wandb
+    wandb.log({"Regression Plot": wandb.Image(fig)})
+    plt.close(fig)
 
     print("MLP model test successful!")
     wandb.finish()
@@ -128,30 +182,52 @@ def test_mlp_feature_model():
             "kwargs": {"learning_rate": 1e-3},
             "freeze_other_params": False,
         },
+        # Data splits for training
+        "train_x": x[:500],
+        "train_y": y[:500],
+        "val_x": x[500:750],
+        "val_y": y[500:750],
+        "test_x": x[750:],
+        "test_y": y[750:],
     }
 
     wandb.init(project="mlp_feature_test", config=config_dict)
-    config = Config.from_dict(config_dict, data)
-
-    rng_key = random.PRNGKey(0)
-    env, params, rng_key = _setup_training_env(config, data, rng_key)
 
     print("Starting MLP Feature training...")
-    rng_key, params, _ = run_training(
-        rng_key, env, params, data, config, wandb, "mlp_feature_"
-    )
+    env, params, config = train_generic(wandb, config_dict)
 
-    print("Starting MLP Feature evaluation...")
-    run_evaluation(
-        rng_key=rng_key,
-        env=env,
-        params=params,
-        data=data,
-        config=config,
-        logger=wandb,
-    )
+    print("Starting MLP Feature evaluation and plotting...")
+    s_model = env.s_model
 
-    # costum evaluation
+    # Create prediction grid
+    t_space = jnp.linspace(0, 1, 100)
+    x_lin = jnp.linspace(-3, 3, 100)[:, None]
+
+    # Get predictions at all t values
+    # Note: s_model.__call__ expects the inner params dict (params["params"])
+    def predict_at_t(t_single):
+        out, _ = s_model(
+            params["params"], {}, t_single, x_lin, train=False, key=random.PRNGKey(0)
+        )
+        return out.squeeze(axis=-1)
+
+    out = jax.vmap(predict_at_t)(t_space)  # (100, 100)
+
+    # Plot
+    fig, ax = plt.subplots(figsize=(8, 6))
+    colors = plt.cm.viridis(t_space)
+    for o, c in zip(out, colors):
+        ax.plot(x_lin, o, color=c, alpha=0.3)
+    ax.plot(x_lin, out.mean(axis=0), label="mean", c="red", linewidth=2, alpha=0.8)
+    ax.plot(data.test_x, data.test_y, "o", label="test", alpha=0.5, markersize=4)
+    ax.legend()
+    ax.set_xlabel("x")
+    ax.set_ylabel("y")
+    ax.set_title("MLP Feature Regression Curve")
+
+    # Log to wandb
+    wandb.log({"Regression Plot": wandb.Image(fig)})
+    plt.close(fig)
 
     print("MLP Feature model test successful!")
     wandb.finish()

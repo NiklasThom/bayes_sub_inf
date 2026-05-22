@@ -1059,7 +1059,9 @@ def run_evaluation(
         print("Saved test logits artifact")
 
     # -- Plot test performance along curve (not per_leave) --
-    test_metric_along_curve = s_model.evaluate(test_logits, test_y, key_prefix="test_", weights=False)
+    test_metric_along_curve = s_model.evaluate(
+        test_logits, test_y, key_prefix="test_", weights=False
+    )
     if use_linspace:
         # Only plot for classification tasks (which have mean_ece)
         # if key_prefix + "mean_ece" in test_metrics:
@@ -2099,17 +2101,20 @@ def _train_full_curve(rng_key, config: "Config", data, train_params, logger, art
         if last_trainable_params is not None:
             artifact.add_file(f"tmp_files/{run_id}_last_trainable_params.npy")
 
+    return env, params, rng_key
+
 
 def main():
+    """Main entry point for Qwen curve fine-tuning.
+
+    This is a Qwen-specific example showing how to use the generic train() function.
+    For other model types, see the test scripts or create your own entry point.
+    """
     jax.config.update("jax_explain_cache_misses", True)
     logger = wandb.init()
     config_dict = dict(wandb.config)  # type: ignore[arg-type]
-    train(logger, config_dict)
 
-
-def train(logger, config_dict):
-    """Main training orchestrator for Qwen curve fine-tuning."""
-    config_dict = dict(config_dict)  # shallow copy so we can mutate
+    # Qwen-specific setup
     rng_key = random.PRNGKey(config_dict["rng_seed"])
     artifact = wandb.Artifact(name="params", type="pytree")
 
@@ -2132,6 +2137,33 @@ def train(logger, config_dict):
     config_dict["net_kwargs"]["target_token_ids"] = unique_target_ids
     config = Config.from_dict(config_dict, data)
 
+    # Call generic train function
+    env, params, config = train(logger, config, data)
+    logger.finish()
+
+
+def train(logger, config: Config, data: DataSplits):
+    """Generic training orchestrator for any model type.
+
+    This function handles the core training pipeline including expert data sorting,
+    pretraining of fixed control points, and full curve training. Model-specific
+    setup (loading, dataset preparation) should be done before calling this function.
+
+    Args:
+        logger: wandb logger for metric and artifact logging
+        config: Fully constructed Config object with all parameters
+        data: Fully loaded DataSplits with train/val/test splits
+
+    Returns:
+        (env, params, config) - TrainingEnv, final params, and config for further evaluation
+    """
+    # Create artifact if saving params is enabled
+    artifact = (
+        wandb.Artifact(name="params", type="pytree")
+        if config.train_hyper.save_params
+        else None
+    )
+
     # sort data for expert sampling, if needed
     if config.train_hyper.ds_sampling == "expert":
         # Generic model instantiation for expert sorting
@@ -2146,20 +2178,29 @@ def train(logger, config_dict):
             train_y=train_y,
         )
 
+    # Initialize rng_key from config
+    rng_key = random.PRNGKey(config.rng_seed)
+
+    # Pretraining fixed control points (if any)
     pretrained_params = [False] * len(config.model_params.cp_fix)
     if any(config.model_params.cp_fix):
         pretrained_params, rng_key = _pretrain_fixed_cps(
             rng_key, config, data, logger, artifact
         )
 
+    # Train full curve (handles all cases: k=0, k>0, all fixed, some fixed)
     if len(config.model_params.cp_fix) > 1:
-        _train_full_curve(rng_key, config, data, pretrained_params, logger, artifact)
+        env, params, rng_key = _train_full_curve(
+            rng_key, config, data, pretrained_params, logger, artifact
+        )
 
-    if config.train_hyper.save_params:
+    # Log artifact if enabled
+    if config.train_hyper.save_params and artifact:
         logger.log_artifact(artifact)
         time.sleep(5)
         print("Logged artifact with parameters.")
-    logger.finish()
+
+    return env, params, config
 
 
 if __name__ == "__main__":
