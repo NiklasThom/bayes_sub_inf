@@ -4,12 +4,10 @@ import jax.numpy as jnp
 from jax import random
 import numpy as np
 import wandb
-from subspace_inference.curve_optimizer.trainer.fineTuning_PtoC import (
+from subspace_inference.curve_optimizer.trainer.training_pipeline import (
     Config,
     DataSplits,
-    _setup_training_env,
-    run_training,
-    run_evaluation,
+    train,
 )
 from subspace_inference.curve_optimizer.datasets.toy_regression import (
     load_toy_regression_dataset,
@@ -17,11 +15,12 @@ from subspace_inference.curve_optimizer.datasets.toy_regression import (
 
 
 def test_toy_pipeline():
-    # Initialize wandb in offline mode for testing
-    wandb.init(project="toy_test")
-
-    # 1. Load data
     x, y, _ = load_toy_regression_dataset(n_samples=1000)
+    x = (x - x.mean()) / x.std()
+    y = (y - y.mean()) / y.std()
+    shuffle_idx = jax.random.permutation(random.PRNGKey(0), x.shape[0])
+    x = x[shuffle_idx]
+    y = y[shuffle_idx]
     data = DataSplits(
         train_x=x[:500],
         train_y=y[:500],
@@ -31,7 +30,6 @@ def test_toy_pipeline():
         test_y=y[750:],
     )
 
-    # 2. Mock configuration
     config_dict = {
         "rng_seed": 42,
         "net_kwargs": {
@@ -64,29 +62,29 @@ def test_toy_pipeline():
         },
     }
 
-    config = Config.from_dict(config_dict, data)
+    logger = wandb.init(project="toy_test", config=config_dict)
 
-    # 3. Setup training env
-    rng_key = random.PRNGKey(0)
-    env, params, rng_key = _setup_training_env(config, data, rng_key)
-
-    # 4. Run training
     print("Starting toy training...")
-    rng_key, params, _ = run_training(rng_key, env, params, data, config, wandb, "toy_")
+    config = Config.from_dict(config_dict, data)
+    env, params, config = train(logger, config, data)
 
-    # 5. Run evaluation
     print("Starting toy evaluation...")
-    run_evaluation(
-        rng_key=rng_key,
-        env=env,
-        params=params,
-        data=data,
-        config=config,
-        logger=wandb,
-    )
+    s_model = env.s_model
+
+    t_space = jnp.linspace(0, 1, 100)
+    x_lin = jnp.linspace(-3, 3, 100)[:, None]
+
+    def predict_at_t(t_single):
+        out, _ = s_model(
+            params["params"], {}, t_single, x_lin, train=False, key=random.PRNGKey(0)
+        )
+        return out.squeeze(axis=-1)
+
+    out = jax.vmap(predict_at_t)(t_space)
 
     print("Toy pipeline verification successful!")
 
+    wandb.log({"test_key": 1.0})
     wandb.finish()
 
 

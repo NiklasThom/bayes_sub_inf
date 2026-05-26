@@ -6,32 +6,22 @@ import jax.numpy as jnp
 from jax import random
 import numpy as np
 import wandb
-from subspace_inference.curve_optimizer.trainer.fineTuning_PtoC import (
+from subspace_inference.curve_optimizer.trainer.training_pipeline import (
     Config,
     DataSplits,
-    _setup_training_env,
-    run_training,
-    run_evaluation,
+    train,
 )
 
 
 def create_toy_image_dataset(n_samples=1000):
-    """Create a toy image classification dataset.
-
-    Returns:
-        x: (n_samples, 1, 28, 28) - grayscale images
-        y: (n_samples,) - class labels (0-9)
-    """
     key = random.PRNGKey(42)
 
-    # Generate random images with class-specific means
     x = []
     y = []
 
     for class_id in range(10):
         n_per_class = n_samples // 10
         key, subkey = random.split(key)
-        # Class-specific mean pattern
         class_mean = random.normal(subkey, (1, 28, 28)) * 0.5 + class_id * 0.1
         key, subkey = random.split(key)
         images = class_mean + random.normal(subkey, (n_per_class, 1, 28, 28)) * 0.5
@@ -41,7 +31,6 @@ def create_toy_image_dataset(n_samples=1000):
     x = jnp.concatenate(x, axis=0)
     y = jnp.array(y)
 
-    # Shuffle
     key, subkey = random.split(key)
     perm = random.permutation(subkey, n_samples)
     x = x[perm]
@@ -94,27 +83,17 @@ def test_lenet_model():
         },
     }
 
-    config = Config.from_dict(config_dict, data)
-
-    rng_key = random.PRNGKey(0)
-    env, params, rng_key = _setup_training_env(config, data, rng_key)
+    logger = wandb.init(project="lenet_test", config=config_dict)
 
     print("Starting LeNet training...")
-    rng_key, params, _ = run_training(
-        rng_key, env, params, data, config, wandb, "lenet_"
-    )
+    config = Config.from_dict(config_dict, data)
+    env, params, config = train(logger, config, data)
 
     print("Starting LeNet evaluation...")
-    run_evaluation(
-        rng_key=rng_key,
-        env=env,
-        params=params,
-        data=data,
-        config=config,
-        logger=wandb,
-    )
+    s_model = env.s_model
 
     print("LeNet model test successful!")
+    wandb.log({"test_key": 1.0})
     wandb.finish()
 
 
@@ -162,27 +141,17 @@ def test_lenetti_model():
         },
     }
 
-    config = Config.from_dict(config_dict, data)
-
-    rng_key = random.PRNGKey(0)
-    env, params, rng_key = _setup_training_env(config, data, rng_key)
+    logger = wandb.init(project="lenetti_test", config=config_dict)
 
     print("Starting LeNetti training...")
-    rng_key, params, _ = run_training(
-        rng_key, env, params, data, config, wandb, "lenetti_"
-    )
+    config = Config.from_dict(config_dict, data)
+    env, params, config = train(logger, config, data)
 
     print("Starting LeNetti evaluation...")
-    run_evaluation(
-        rng_key=rng_key,
-        env=env,
-        params=params,
-        data=data,
-        config=config,
-        logger=wandb,
-    )
+    s_model = env.s_model
 
     print("LeNetti model test successful!")
+    wandb.log({"test_key": 1.0})
     wandb.finish()
 
 

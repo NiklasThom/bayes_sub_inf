@@ -6,12 +6,10 @@ import jax.numpy as jnp
 from jax import random
 import numpy as np
 import wandb
-from subspace_inference.curve_optimizer.trainer.fineTuning_PtoC import (
+from subspace_inference.curve_optimizer.trainer.training_pipeline import (
     Config,
     DataSplits,
-    _setup_training_env,
-    run_training,
-    run_evaluation,
+    train,
 )
 from subspace_inference.curve_optimizer.models.ResNet import ResNetBlock
 
@@ -67,7 +65,7 @@ def test_resnet_model():
         "net_kwargs": {
             "model_type": "resnet",
             "num_classes": 10,
-            "act_fn": lambda x: nn.relu(x),
+            "act_fn": jax.nn.relu,
             "block_class": ResNetBlock,
             "num_blocks": (2, 2, 2),
             "c_hidden": (16, 32, 64),
@@ -96,31 +94,16 @@ def test_resnet_model():
         },
     }
 
-    config = Config.from_dict(config_dict, data)
-
-    rng_key = random.PRNGKey(0)
-    env, params, rng_key = _setup_training_env(config, data, rng_key)
+    logger = wandb.init(project="resnet_test", config=config_dict)
 
     print("Starting ResNet training...")
-    rng_key, params, _ = run_training(
-        rng_key, env, params, data, config, wandb, "resnet_"
-    )
-
-    print("Starting ResNet evaluation...")
-    run_evaluation(
-        rng_key=rng_key,
-        env=env,
-        params=params,
-        data=data,
-        config=config,
-        logger=wandb,
-    )
+    config = Config.from_dict(config_dict, data)
+    env, params, config = train(logger, config, data)
 
     print("ResNet model test successful!")
+    wandb.log({"test_key": 1.0})
     wandb.finish()
 
 
 if __name__ == "__main__":
-    import flax.linen as nn
-
     test_resnet_model()
