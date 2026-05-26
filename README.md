@@ -34,12 +34,30 @@ This framework enables fine-tuning of Large Language Models (LLMs) within a para
 ### Environment Setup
 
 #### Install dependencies and setup environment
-poetry install
 
-### Smoke Test
-
+**Base installation** (includes CUDA 12 support automatically):
 ```bash
-  python qwen_fineTuning_PtoC_fixCps.py --batch-size=4 --cp-fix 1 0 1 0 1 --smoke-test
+uv sync
+```
+
+**With development tools** (pytest, ipykernel):
+```bash
+uv sync --group dev
+```
+
+**With visualization packages** (matplotlib, seaborn, etc.):
+```bash
+uv sync --extra viz
+```
+
+**All dependencies**:
+```bash
+uv sync --all-extras --all-groups
+```
+
+#### Running scripts
+```bash
+uv run python qwen_fineTuning_PtoC_fixCps.py --batch-size=4 --cp-fix 1 0 1 0 1 --smoke-test
 ```
 
 ## Training Modes

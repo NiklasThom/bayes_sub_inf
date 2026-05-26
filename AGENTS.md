@@ -25,14 +25,47 @@ This file contains crucial context for agents working in this repository.
 - **Generic Training Pipeline:** The `train()` function in `training_pipeline.py` handles all curve training logic (k=0 single-point, k>0 curve, fixed/free control points). Model-specific setup (loading, dataset preparation) should be done before calling `train()`.
 
 ## Environment & Setup
-- The project uses **Poetry** for dependency management. Requires Python `^3.10,<3.12`.
-- **JAX/CUDA Quirk:** To properly install or upgrade JAX with CUDA 12 support, you must run:
-  `poetry run pip install --upgrade "jax[cuda12_local]==0.5.3" "flax==0.10.5"`
+- The project uses **uv** for dependency management. Requires Python `^3.10,<3.12`.
+- **CUDA 12 Support**: Automatically installed with JAX via `jax[cuda12]` extra. No manual setup needed!
+
+## Command Reference
+
+### Basic Commands
+- `uv sync` - Install all dependencies (replaces `poetry install`)
+- `uv run python script.py` - Run a script (replaces `poetry run python script.py`)
+- `uv add package` - Add a dependency (replaces `poetry add package`)
+- `uv remove package` - Remove a dependency (replaces `poetry remove package`)
+- `uv lock` - Lock dependencies (replaces `poetry lock`)
+
+### Optional Dependencies
+
+**Development tools** (always available):
+```bash
+uv sync --group dev
+```
+Includes: `pytest`, `ipykernel` (for Jupyter notebooks)
+
+**Visualization packages** (optional):
+```bash
+uv sync --extra viz
+```
+Includes: `ipywidgets`, `seaborn`, `matplotlib`, `pandas`, `arviz`, `hvplot`, `datashader`, etc.
+
+**All extras**:
+```bash
+uv sync --all-extras --all-groups
+```
+
+### Python Version
+uv will automatically use the first available Python 3.10 or 3.11. To specify a version:
+```bash
+uv sync --python 3.10
+```
 
 ## Verification & Testing
 - **Smoke Test:** To verify changes, use the updated path:
   ```bash
-  poetry run python subspace_inference/curve_optimizer/trainer/qwen_fineTuning_PtoC_fixCps.py --batch-size=4 --cp-fix 1 0 1 0 1 --smoke-test
+  uv run python subspace_inference/curve_optimizer/trainer/qwen_fineTuning_PtoC_fixCps.py --batch-size=4 --cp-fix 1 0 1 0 1 --smoke-test
   ```
 
 ## Single-Point (k=0) Evaluation
