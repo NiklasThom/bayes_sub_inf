@@ -1059,7 +1059,7 @@ class RegressionSubspace(SubspaceBaseModel):
         "mae": jnp.array(jnp.inf, dtype=jnp.float32),
     }
 
-    def __init__(self, out_dist_log_scale=0.0, **kwargs):
+    def __init__(self, out_dist_log_scale=jnp.log(0.1), **kwargs):
         """
         Initializes the RegressionSubspace class.
 
@@ -1095,6 +1095,7 @@ class RegressionSubspace(SubspaceBaseModel):
         )  # shape (n_data, output_dim)
         assert out.shape[-1] == 1, "RegressionSubspace expects output_dim=1"
         assert y.ndim == 1, "RegressionSubspace expects y to be 1D"
+        assert out.shape[0] == y.shape[0], "Batch size of output and y must match"
         nll = -jax.scipy.stats.norm.logpdf(
             y, loc=out.squeeze(axis=-1), scale=jnp.exp(self.log_scale) + 1e-8
         )

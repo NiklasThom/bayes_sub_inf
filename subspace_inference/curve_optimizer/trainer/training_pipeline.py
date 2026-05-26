@@ -350,13 +350,18 @@ class ModelParams:
     @property
     def cp_fix(self) -> list:
         """Generate cp_fix based on segments and pretraining."""
+        if self.Pretraining is False:
+            assert self.k > 0, (
+                "no Pretraining/ no single mode or DE training => should be curve training with k > 0"
+            )
         k = self.k
         if not self.Pretraining:
             return [0] * (k + 1)
 
         # Safe-guard for pretraining mode (k=0) to prevent ZeroDivisionError
-        if k == 0:
-            return [1]
+        if self.num_curve_segment == 0:
+        # if k == 0:
+            return [1,] * self.SegDeg 
 
         # Fixed endpoints of each segment
         cp_fix = [0] * (k + 1)
@@ -2190,15 +2195,20 @@ def train(logger, config: Config, data: DataSplits):
         )
 
     # Train full curve (handles all cases: k=0, k>0, all fixed, some fixed)
-    if len(config.model_params.cp_fix) > 1:
+    if config.model_params.k > 0:
         env, params, rng_key = _train_full_curve(
             rng_key, config, data, pretrained_params, logger, artifact
         )
     else:
-        assert pretrained_params[0] is not False, "Expected pretrained parameters for the single control point, but got False."
-        assert len(pretrained_params) == 1, f"Expected exactly one set of pretrained parameters for single control point, but got {len(pretrained_params)}."
-        # If only one CP, skip the full curve training phase since it's redundant
-        params = {'params': pretrained_params[0]}
+        if config.model_params.SegDeg == 1:
+            assert pretrained_params[0] is not False, "Expected pretrained parameters for the single control point, but got False."
+            assert len(pretrained_params) == 1, f"Expected exactly one set of pretrained parameters for single control point, but got {len(pretrained_params)}."
+            # If only one CP, skip the full curve training phase since it's redundant
+            params = {'params': pretrained_params[0]}
+        else:
+            # DE mode
+            assert config.model_params.SegDeg == len(pretrained_params), f"Expected pretrained parameters for each control point segment, but got {len(pretrained_params)} sets of parameters for SegDeg {config.model_params.SegDeg}."
+            params = {'params': pretrained_params}
 
     # Log artifact if enabled
     if config.train_hyper.save_params and artifact:

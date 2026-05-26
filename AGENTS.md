@@ -9,7 +9,7 @@ This file contains crucial context for agents working in this repository.
   - `subspace_inference.curve_optimizer`: Contains training and optimization logic.
   - `subspace_inference.curve_optimizer.models`: Contains model implementations (e.g., Qwen JAX).
   - `subspace_inference.curve_optimizer.trainer`: Contains training entrypoints.
-- **Main Entrypoint:** `subspace_inference/curve_optimizer/trainer/qwen_fineTuning_PtoC_fixCps.py`
+- **Main Entrypoint:** `subspace_inference/curve_optimizer/trainer/training_pipeline.py` (generic training)
 - **Core Math:** `subspace_inference/curve_optimizer/subspace_curve.py`
 
 ## Transitional Codebase (Important!)
@@ -22,6 +22,7 @@ This file contains crucial context for agents working in this repository.
 - **Model Extensibility:** The `models/` directory is designed to be easily extended with new JAX implementations.
 - **Dataset Injection:** The architecture aims to decouple dataset loading from training, allowing users to inject custom datasets easily.
 - **Optimization Modes:** The framework supports Bézier curve optimization both with and without LoRA.
+- **Generic Training Pipeline:** The `train()` function in `training_pipeline.py` handles all curve training logic (k=0 single-point, k>0 curve, fixed/free control points). Model-specific setup (loading, dataset preparation) should be done before calling `train()`.
 
 ## Environment & Setup
 - The project uses **Poetry** for dependency management. Requires Python `^3.10,<3.12`.
@@ -33,6 +34,20 @@ This file contains crucial context for agents working in this repository.
   ```bash
   poetry run python subspace_inference/curve_optimizer/trainer/qwen_fineTuning_PtoC_fixCps.py --batch-size=4 --cp-fix 1 0 1 0 1 --smoke-test
   ```
+
+## Single-Point (k=0) Evaluation
+To run single-point evaluation (no curve, just a single model):
+```python
+config = {
+    "model_params": {
+        "num_curve_segment": 0,
+        "SegDeg": 1,
+        "Pretraining": True,
+        # ... other params ...
+    },
+}
+```
+This configuration sets `k=0` (single control point) and trains/evaluates a standard model without Bézier curve optimization.
 
 ## Adding New Models
 
