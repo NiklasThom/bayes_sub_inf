@@ -3,15 +3,6 @@
 from typing import Dict, Type
 from flax import linen as nn
 
-# Import models to register them (decorator handles registration)
-from subspace_inference.curve_optimizer.models.MLP import MLPModel, MLPFeatureModel  # noqa: F401
-from subspace_inference.curve_optimizer.models.ResNet import (
-    ResNet,  # noqa: F401
-    ResNetBlock,  # noqa: F401
-    PreActResNetBlock,  # noqa: F401
-)
-from subspace_inference.curve_optimizer.models.LeNet import LeNet, LeNetti  # noqa: F401
-
 # Model registry for backbone models
 MODEL_REGISTRY: Dict[str, Type[nn.Module]] = {}
 
@@ -35,3 +26,13 @@ def get_model_class(name: str) -> Type[nn.Module]:
             f"Unknown model: '{name}'. Available: {list(MODEL_REGISTRY.keys())}"
         )
     return MODEL_REGISTRY[name]
+
+
+# Import models to register them (decorator handles registration)
+from subspace_inference.curve_optimizer.models.MLP import MLPModel, MLPFeatureModel  # noqa: F401, E402
+from subspace_inference.curve_optimizer.models.ResNet import (  # noqa: E402
+    ResNet,  # noqa: F401
+    ResNetBlock,  # noqa: F401
+    PreActResNetBlock,  # noqa: F401
+)
+from subspace_inference.curve_optimizer.models.LeNet import LeNet, LeNetti  # noqa: F401, E402
