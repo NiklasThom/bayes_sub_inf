@@ -1,64 +1,99 @@
-# Time Transformer
+# Subspace Inference
 
-Bézier-curve parameterized neural networks with LoRA integration for fine-tuning large models in a subspace of parameter space.
-This framework enables fine-tuning of Large Language Models (LLMs) within a parameter subspace by learning weights as continuous Bezier curves rather than static points.
+Bézier-curve parameterized neural networks with LoRA integration for fine-tuning models in a parameter subspace. This framework enables fine-tuning within a parameter subspace by learning weights as continuous Bézier curves rather than static points.
+
+## Quick Start
+
+### Installation
+
+```bash
+# Base installation (includes CUDA 12 support automatically)
+uv sync
+
+# With development tools
+uv sync --group dev
+
+# With visualization packages
+uv sync --extra viz
+```
+
+### Basic Usage
+
+The main training entry point is `subspace_inference/curve_optimizer/trainer/training_pipeline.py`. Here's a minimal example:
+
+```python
+from subspace_inference.curve_optimizer.trainer.training_pipeline import train, Config, DataSplits
+import wandb
+
+# 1. Load your dataset (model-specific)
+data = DataSplits(train_x=..., train_y=..., val_x=..., val_y=..., test_x=..., test_y=...)
+
+# 2. Configure the experiment
+config_dict = {
+    "rng_seed": 1,
+    "model_params": {
+        "num_curve_segment": 1,  # k=1 for single-segment curve
+        "SegDeg": 1,             # degree per segment
+        "Pretraining": False,
+        "subspace_model": "lora_category",  # classification with LoRA
+        "lora_params": {"r": 8, "lora_alpha": 16.0},
+    },
+    "train_hyper": {
+        "batch_size": 4,
+        "num_epochs": 10,
+    },
+    "optimizer_conf": {
+        "name": "adamw",
+        "kwargs": {"learning_rate": 1e-4},
+    },
+}
+config = Config.from_dict(config_dict, data)
+
+# 3. Train
+logger = wandb.init()
+env, params, config = train(logger, config, data)
+```
+
+### Single-Point Evaluation (k=0)
+
+For standard fine-tuning without curves:
+
+```python
+config_dict = {
+    "model_params": {
+        "num_curve_segment": 0,
+        "SegDeg": 1,
+        "Pretraining": True,
+    },
+}
+```
 
 ## Project Layout
 
 ```
 .
-├── qwen_fineTuning_PtoC_fixCps.py   # Main training entry point
-├── src/
-│   ├── subspace_curve.py             # Bézier math, SubspaceBaseModel, LoRA mixins
-│   ├── qwen_jax.py                   # Qwen JAX model, PyTorch→JAX conversion
-│   ├── utils.py                      # Utility functions (ECE, curve metrics)
-├── configs_newDS/                    # Wandb sweep configurations
-│   ├── OpenFlat*.yaml               # Open curve configurations
-│   ├── PretrainedFlat*.yaml         # Pretrained CP configurations
-│   └── *.yaml                       # Dataset-specific configs
-├── dataset/
-│   ├── S2ClassDataset.py            # Classification dataset loader
-│   └── utils/                       # Dataset utilities
-├── save_datasets_and_params.py      # Dataset/model export utilities for WandB
-├── compute_curve_logits.py          # Offline curve evaluation
-├── plot_curve_logits.py             # Visualization utilities
+├── subspace_inference/
+│   ├── curve_optimizer/
+│   │   ├── trainer/
+│   │   │   ├── training_pipeline.py    # Main training entry point
+│   │   │   └── qwen_fineTuning_PtoC_fixCps.py  # Qwen-specific example (deprecated)
+│   │   ├── models/                     # DNN backbone architectures
+│   │   │   ├── __init__.py            # Model registry
+│   │   │   ├── MLP.py                 # MLP implementations
+│   │   │   ├── ResNet.py              # ResNet implementations
+│   │   │   └── qwen_jax.py            # Qwen JAX wrapper
+│   │   └── subspace_curve.py          # Core subspace math & model registry
+│   └── __init__.py
+├── configs_newDS/                      # Wandb sweep configurations
+└── ...
 ```
 
-### Key Files
+### Key Components
 
-- **`src/subspace_curve.py`**: Core subspace math, model registry, mixin classes
-- **`src/qwen_jax.py`**: Qwen model wrapper, weight conversion, serialization
-- **`qwen_fineTuning_PtoC_fixCps.py`**: Training orchestration, evaluation pipeline
-
-
-### Environment Setup
-
-#### Install dependencies and setup environment
-
-**Base installation** (includes CUDA 12 support automatically):
-```bash
-uv sync
-```
-
-**With development tools** (pytest, ipykernel):
-```bash
-uv sync --group dev
-```
-
-**With visualization packages** (matplotlib, seaborn, etc.):
-```bash
-uv sync --extra viz
-```
-
-**All dependencies**:
-```bash
-uv sync --all-extras --all-groups
-```
-
-#### Running scripts
-```bash
-uv run python qwen_fineTuning_PtoC_fixCps.py --batch-size=4 --cp-fix 1 0 1 0 1 --smoke-test
-```
+- **`training_pipeline.py`**: Generic training orchestrator for any model
+- **`subspace_curve.py`**: Bézier math, SubspaceBaseModel, subspace model registry
+- **`models/`**: Task-agnostic DNN backbones (MLP, ResNet, Qwen, etc.)
+- **`models/__init__.py`**: Backbone model registry
 
 ## Training Modes
 
@@ -66,19 +101,15 @@ uv run python qwen_fineTuning_PtoC_fixCps.py --batch-size=4 --cp-fix 1 0 1 0 1 -
 
 Train fixed control points independently before fitting the curve:
 
-```bash
-# Set Pretraining=True in config, cp_fix=[1,] for example
-# Each fixed CP (value=1) is trained separately
-```
+- Set `num_curve_segment=0`, `Pretraining=True`
+- Each fixed CP (value=1 in `cp_fix`) is trained separately
 
 ### 2. Curve Fitting Mode (k>0)
 
 Fit Bézier curve connecting the control points:
 
-```bash
-# num_curve_segment=2, SegDeg=2 → k=5 control points
-# cp_fix=[1, 0, 1, 0, 1] fixes endpoints, trains intermediate points
-```
+- `num_curve_segment=2`, `SegDeg=2` → k=5 control points
+- `cp_fix=[1, 0, 1, 0, 1]` fixes endpoints, trains intermediate points
 
 ### 3. Evaluation
 
@@ -88,35 +119,154 @@ Automatically runs after training. Supports multiple evaluation modes via `curve
 - `per_leave`: Leave-one-out evaluation
 - `noBMA`: Uniform averaging without Bayesian model averaging
 
-## Configuration
+## Extending the Framework
 
-### CLI Arguments
+### Adding Custom DNN Backbones
 
-```bash
-python qwen_fineTuning_PtoC_fixCps.py \
-  --batch-size 4 \
-  --cp-fix 1 0 1 0 1 \
-  --smoke-test
+Create task-agnostic neural network architectures in `subspace_inference/curve_optimizer/models/`:
+
+```python
+# subspace_inference/curve_optimizer/models/my_model.py
+from flax import linen as nn
+import jax.numpy as jnp
+from subspace_inference.curve_optimizer.models import register_model
+
+@register_model("my_mlp")
+class MyMLP(nn.Module):
+    """Custom MLP architecture."""
+    hidden_dim: int = 128
+    num_layers: int = 3
+    output_dim: int = 10
+    
+    @nn.compact
+    def __call__(self, x, train: bool = True):
+        for _ in range(self.num_layers):
+            x = nn.Dense(self.hidden_dim)(x)
+            x = nn.relu(x)
+            x = nn.Dropout(0.1)(x, deterministic=not train)
+        x = nn.Dense(self.output_dim)(x)
+        return x
 ```
 
-| Argument | Default | Description |
-|----------|---------|-------------|
-| `--batch-size` | 16 | Training batch size |
-| `--cp-fix` | `[1, 0, 1]` | Control point fix mask (1=fixed, 0=trainable) |
-| `--smoke-test` | False | Quick test with reduced steps/epochs |
-| `--use-sweep` | False | Use wandb sweep config |
+**Usage in config:**
 
+```python
+config_dict = {
+    "net_kwargs": {
+        "model_type": "my_mlp",
+        "hidden_dim": 256,
+        "num_layers": 4,
+        "output_dim": 10,
+    },
+}
+```
 
+**Key Points:**
 
-### Adding a New Subspace Model
+- Must be a Flax `nn.Module`
+- Must accept `train: bool = True` parameter
+- Register with `@register_model("name")` decorator
+- Import the module in `models/__init__.py` to auto-register
 
-1. Create class inheriting `SubspaceBaseModel` in `src/subspace_curve.py`
-2. Register with `@register_subspace_model("name")`
-3. Implement `nll(self, params, state, t, x, y, train, key)`
-4. Add to `get_subspace_model()` lookup
+### Adding Custom Subspace Models
 
-### Adding a New Regularizer/Mixin
+Define task-specific loss functions and evaluation metrics in `subspace_curve.py`:
 
-1. Create mixin class inheriting from `SubspaceBaseModel`
-2. Override `compute_loss_t()` to add regularizer term
-3. Pass mixin params via `ModelParams.get_model_kwargs()`
+```python
+# subspace_inference/curve_optimizer/subspace_curve.py
+import jax.numpy as jnp
+from jax import random
+import optax
+from subspace_inference.curve_optimizer.subspace_curve import (
+    register_subspace_model,
+    SubspaceBaseModel,
+)
+
+@register_subspace_model("my_task")
+class MyTaskSubspace(SubspaceBaseModel):
+    """Custom subspace model for my task."""
+    
+    # Required: Define empty metric template
+    empty_metric = {
+        "ll": jnp.array(-jnp.inf, dtype=jnp.float32),
+        "acc": jnp.array(-jnp.inf, dtype=jnp.float32),
+        "mean_loss": jnp.array(jnp.inf, dtype=jnp.float32),
+    }
+    
+    def nll(self, params, state, t, x, y, train: bool = True, key=None):
+        """
+        Compute negative log-likelihood loss.
+        
+        Args:
+            params: Model parameters
+            state: Flax state (BatchNorm stats, etc.)
+            t: Curve parameter (scalar in [0, 1])
+            x: Input data
+            y: Target labels
+            train: Training mode flag
+            key: JAX random key
+            
+        Returns:
+            (loss, state, logits) where logits shape is (n_samples, n_data, output_dim)
+        """
+        # Forward pass through subspace model (interpolates params based on t)
+        out, state = self(params, state, t, x, train=train, key=key)
+        
+        # Compute loss (example: classification)
+        loss = optax.losses.softmax_cross_entropy_with_integer_labels(logits=out, labels=y)
+        return jnp.mean(loss), state, out
+    
+    def evaluate(self, logits, y, key_prefix="", weights=None):
+        """
+        Compute evaluation metrics from sampled logits.
+        
+        Args:
+            logits: (n_samples, n_data, n_classes) - unnormalized logits
+            y: (n_data,) - integer labels
+            weights: None/False for no averaging, True for uniform average,
+                    or array of shape (n_samples,) for weighted BMA
+            key_prefix: Prefix for metric keys (e.g., "test_", "val_")
+            
+        Returns:
+            dict with metric keys like "ll", "acc", etc.
+        """
+        # Compute log_softmax
+        log_probs = jax.nn.log_softmax(logits, axis=-1)
+        
+        # Ensemble predictions based on weights
+        if weights is None or weights is False:
+            post_logits = log_probs.mean(axis=0)  # Uniform average
+        elif weights is True:
+            post_logits = jax.nn.logsumexp(log_probs, axis=0) - jnp.log(log_probs.shape[0])
+        else:
+            post_logits = jax.nn.logsumexp(log_probs, b=weights[:, None, None], axis=0)
+        
+        # Compute metrics
+        acc = jnp.mean(jnp.argmax(post_logits, axis=-1) == y)
+        ll = jnp.take_along_axis(post_logits, y[:, None], axis=-1).squeeze(-1).mean()
+        
+        return {
+            f"{key_prefix}ll": ll,
+            f"{key_prefix}acc": acc,
+            f"{key_prefix}mean_loss": -ll,
+        }
+```
+
+**Usage in config:**
+
+```python
+config_dict = {
+    "model_params": {
+        "subspace_model": "my_task",
+    },
+}
+```
+
+**Key Points:**
+
+- Must inherit from `SubspaceBaseModel`
+- Must define `empty_metric` class attribute (required for JAX consistency)
+- `nll()` returns `(loss, state, logits)` where logits shape is `(n_samples, n_data, output_dim)`
+- `evaluate()` receives sampled logits and returns metrics dict
+- Use `@register_subspace_model("name")` decorator
+- Mixins (LoRA, Repulsive, JSD, etc.) can be combined via multiple inheritance
