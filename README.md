@@ -137,7 +137,7 @@ class MyMLP(nn.Module):
     hidden_dim: int = 128
     num_layers: int = 3
     output_dim: int = 10
-    
+
     @nn.compact
     def __call__(self, x, train: bool = True):
         for _ in range(self.num_layers):
@@ -185,18 +185,18 @@ from subspace_inference.curve_optimizer.subspace_curve import (
 @register_subspace_model("my_task")
 class MyTaskSubspace(SubspaceBaseModel):
     """Custom subspace model for my task."""
-    
+
     # Required: Define empty metric template
     empty_metric = {
         "ll": jnp.array(-jnp.inf, dtype=jnp.float32),
         "acc": jnp.array(-jnp.inf, dtype=jnp.float32),
         "mean_loss": jnp.array(jnp.inf, dtype=jnp.float32),
     }
-    
+
     def nll(self, params, state, t, x, y, train: bool = True, key=None):
         """
         Compute negative log-likelihood loss.
-        
+
         Args:
             params: Model parameters
             state: Flax state (BatchNorm stats, etc.)
@@ -205,34 +205,34 @@ class MyTaskSubspace(SubspaceBaseModel):
             y: Target labels
             train: Training mode flag
             key: JAX random key
-            
+
         Returns:
             (loss, state, logits) where logits shape is (n_samples, n_data, output_dim)
         """
         # Forward pass through subspace model (interpolates params based on t)
         out, state = self(params, state, t, x, train=train, key=key)
-        
+
         # Compute loss (example: classification)
         loss = optax.losses.softmax_cross_entropy_with_integer_labels(logits=out, labels=y)
         return jnp.mean(loss), state, out
-    
+
     def evaluate(self, logits, y, key_prefix="", weights=None):
         """
         Compute evaluation metrics from sampled logits.
-        
+
         Args:
             logits: (n_samples, n_data, n_classes) - unnormalized logits
             y: (n_data,) - integer labels
             weights: None/False for no averaging, True for uniform average,
                     or array of shape (n_samples,) for weighted BMA
             key_prefix: Prefix for metric keys (e.g., "test_", "val_")
-            
+
         Returns:
             dict with metric keys like "ll", "acc", etc.
         """
         # Compute log_softmax
         log_probs = jax.nn.log_softmax(logits, axis=-1)
-        
+
         # Ensemble predictions based on weights
         if weights is None or weights is False:
             post_logits = log_probs.mean(axis=0)  # Uniform average
@@ -240,11 +240,11 @@ class MyTaskSubspace(SubspaceBaseModel):
             post_logits = jax.nn.logsumexp(log_probs, axis=0) - jnp.log(log_probs.shape[0])
         else:
             post_logits = jax.nn.logsumexp(log_probs, b=weights[:, None, None], axis=0)
-        
+
         # Compute metrics
         acc = jnp.mean(jnp.argmax(post_logits, axis=-1) == y)
         ll = jnp.take_along_axis(post_logits, y[:, None], axis=-1).squeeze(-1).mean()
-        
+
         return {
             f"{key_prefix}ll": ll,
             f"{key_prefix}acc": acc,
@@ -270,3 +270,25 @@ config_dict = {
 - `evaluate()` receives sampled logits and returns metrics dict
 - Use `@register_subspace_model("name")` decorator
 - Mixins (LoRA, Repulsive, JSD, etc.) can be combined via multiple inheritance
+
+## Contributing
+
+### Development Setup
+
+1.  Install the package with development dependencies:
+    ```bash
+    uv sync --group dev
+    ```
+
+2.  Install `pre-commit` hooks to ensure code quality (formatting with `ruff`):
+    ```bash
+    uv run pre-commit install
+    ```
+
+### Code Standards
+
+We use `ruff` for linting and formatting. The pre-commit hooks will automatically check your changes. You can also run them manually:
+
+```bash
+uv run pre-commit run --all-files
+```

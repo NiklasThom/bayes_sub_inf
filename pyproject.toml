@@ -37,6 +37,7 @@ viz = [
 dev = [
     "pytest>=9.0.2,<10.0.0",
     "ipykernel>=6.29.5,<7.0.0",
+    "pre-commit>=3.5.0",
 ]
 
 [build-system]

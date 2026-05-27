@@ -1,6 +1,5 @@
 import jax
 import jax.numpy as jnp
-import numpy as np
 
 
 def load_toy_regression_dataset(n_samples=1000, seed=42):

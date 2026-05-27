@@ -19,7 +19,9 @@ def test_mlp_model():
     """Test standard MLP model with regression task."""
 
     x, y, _ = load_toy_regression_dataset(n_samples=1000)
-    x = (x - x.mean()) / x.std()  # Center and scale the data for better polynomial fitting
+    x = (
+        x - x.mean()
+    ) / x.std()  # Center and scale the data for better polynomial fitting
     y = (y - y.mean()) / y.std()
     shuffle_idx = jax.random.permutation(random.PRNGKey(0), x.shape[0])
     x = x[shuffle_idx]
@@ -62,7 +64,7 @@ def test_mlp_model():
             "name": "adam",
             "kwargs": {"learning_rate": 1e-3},
             "freeze_other_params": False,
-        }
+        },
     }
 
     logger = wandb.init(project="mlp_test", config=config_dict)
@@ -116,7 +118,9 @@ def test_mlp_feature_model():
     """Test MLP feature model with polynomial features."""
 
     x, y, _ = load_toy_regression_dataset(n_samples=1000)
-    x = (x - x.mean()) / x.std()  # Center and scale the data for better polynomial fitting
+    x = (
+        x - x.mean()
+    ) / x.std()  # Center and scale the data for better polynomial fitting
     y = (y - y.mean()) / y.std()
     shuffle_idx = jax.random.permutation(random.PRNGKey(0), x.shape[0])
     x = x[shuffle_idx]
@@ -160,7 +164,7 @@ def test_mlp_feature_model():
             "name": "adam",
             "kwargs": {"learning_rate": 1e-1},
             "freeze_other_params": False,
-        }
+        },
     }
 
     logger = wandb.init(project="mlp_test", config=config_dict)
@@ -177,7 +181,7 @@ def test_mlp_feature_model():
 
     # Create prediction grid
     t_space = jnp.linspace(0, 1, 100)
-    x_lin = jnp.linspace(x.min()-0.5, x.max()+0.5, 100)[:, None]
+    x_lin = jnp.linspace(x.min() - 0.5, x.max() + 0.5, 100)[:, None]
 
     # Get predictions at all t values
     # Note: s_model.__call__ expects the inner params dict (params["params"])
@@ -208,11 +212,14 @@ def test_mlp_feature_model():
     print("MLP Feature model test successful!")
     wandb.finish()
 
+
 def test_mlp_single_model():
     """Test MLP single model with polynomial features."""
 
     x, y, _ = load_toy_regression_dataset(n_samples=1000)
-    x = (x - x.mean()) / x.std()  # Center and scale the data for better polynomial fitting
+    x = (
+        x - x.mean()
+    ) / x.std()  # Center and scale the data for better polynomial fitting
     y = (y - y.mean()) / y.std()
     shuffle_idx = jax.random.permutation(random.PRNGKey(0), x.shape[0])
     x = x[shuffle_idx]
@@ -244,7 +251,7 @@ def test_mlp_single_model():
         },
         "model_params": {
             "num_curve_segment": 0,  # single MLP no curve
-            "SegDeg": 1,             # single MLP no curve
+            "SegDeg": 1,  # single MLP no curve
             "Pretraining": True,
             "subspace_model": "regression",
             "weight_decay": 1e-5,
@@ -256,7 +263,7 @@ def test_mlp_single_model():
             "name": "adam",
             "kwargs": {"learning_rate": 1e-1},
             "freeze_other_params": False,
-        }
+        },
     }
 
     logger = wandb.init(project="mlp_test", config=config_dict)
@@ -273,7 +280,7 @@ def test_mlp_single_model():
 
     # Create prediction grid
     t_space = jnp.linspace(0, 1, 100)
-    x_lin = jnp.linspace(x.min()-0.5, x.max()+0.5, 100)[:, None]
+    x_lin = jnp.linspace(x.min() - 0.5, x.max() + 0.5, 100)[:, None]
 
     # Get predictions at all t values
     # Note: s_model.__call__ expects the inner params dict (params["params"])
@@ -309,7 +316,9 @@ def test_mlp_DE_model():
     """Test MLP DE model with polynomial features."""
 
     x, y, _ = load_toy_regression_dataset(n_samples=1000)
-    x = (x - x.mean()) / x.std()  # Center and scale the data for better polynomial fitting
+    x = (
+        x - x.mean()
+    ) / x.std()  # Center and scale the data for better polynomial fitting
     y = (y - y.mean()) / y.std()
     shuffle_idx = jax.random.permutation(random.PRNGKey(0), x.shape[0])
     x = x[shuffle_idx]
@@ -340,7 +349,7 @@ def test_mlp_DE_model():
             "smoke_test": False,
         },
         "model_params": {
-            "num_curve_segment": 0, # DE no curve
+            "num_curve_segment": 0,  # DE no curve
             "SegDeg": 5,
             "Pretraining": True,
             "subspace_model": "regression",
@@ -353,7 +362,7 @@ def test_mlp_DE_model():
             "name": "adam",
             "kwargs": {"learning_rate": 1e-1},
             "freeze_other_params": False,
-        }
+        },
     }
 
     logger = wandb.init(project="mlp_test", config=config_dict)
@@ -368,8 +377,6 @@ def test_mlp_DE_model():
 
     print("MLP Feature model test successful!")
     wandb.finish()
-
-
 
 
 if __name__ == "__main__":

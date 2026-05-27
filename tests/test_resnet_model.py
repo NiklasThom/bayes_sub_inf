@@ -1,10 +1,8 @@
 """Test ResNet model with subspace inference framework."""
 
-import os
 import jax
 import jax.numpy as jnp
 from jax import random
-import numpy as np
 import wandb
 from subspace_inference.curve_optimizer.trainer.training_pipeline import (
     Config,

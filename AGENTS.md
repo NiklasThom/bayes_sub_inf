@@ -36,6 +36,8 @@ This file contains crucial context for agents working in this repository.
 - `uv add package` - Add a dependency (replaces `poetry add package`)
 - `uv remove package` - Remove a dependency (replaces `poetry remove package`)
 - `uv lock` - Lock dependencies (replaces `poetry lock`)
+- `uv run pre-commit install` - Install pre-commit hooks
+- `uv run pre-commit run --all-files` - Run all pre-commit hooks manually
 
 ### Optional Dependencies
 
@@ -105,7 +107,7 @@ from subspace_inference.curve_optimizer.models import register_model
 class MyModel(nn.Module):
     hidden_dim: int = 128
     output_dim: int = 10
-    
+
     @nn.compact
     def __call__(self, x, train: bool = True):
         x = nn.Dense(self.hidden_dim)(x)
@@ -149,13 +151,13 @@ class MyTaskSubspace(SubspaceBaseModel):
         "acc": jnp.array(-jnp.inf),
         "mean_loss": jnp.array(jnp.inf),
     }
-    
+
     def nll(self, params, state, t, x, y, train=True, key=None):
         out, state = self(params, state, t, x, train=train, key=key)
         # Custom loss computation
         loss = ...  # Compute loss
         return loss, state, out
-    
+
     def evaluate(self, logits, y, key_prefix="", weights=None):
         # Compute and return metrics
         # logits: (n_samples, n_data, output_dim)

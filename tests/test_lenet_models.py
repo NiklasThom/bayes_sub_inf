@@ -1,10 +1,7 @@
 """Test LeNet models with subspace inference framework."""
 
-import os
-import jax
 import jax.numpy as jnp
 from jax import random
-import numpy as np
 import wandb
 from subspace_inference.curve_optimizer.trainer.training_pipeline import (
     Config,
@@ -89,9 +86,6 @@ def test_lenet_model():
     config = Config.from_dict(config_dict, data)
     env, params, config = train(logger, config, data)
 
-    print("Starting LeNet evaluation...")
-    s_model = env.s_model
-
     print("LeNet model test successful!")
     wandb.log({"test_key": 1.0})
     wandb.finish()
@@ -146,9 +140,6 @@ def test_lenetti_model():
     print("Starting LeNetti training...")
     config = Config.from_dict(config_dict, data)
     env, params, config = train(logger, config, data)
-
-    print("Starting LeNetti evaluation...")
-    s_model = env.s_model
 
     print("LeNetti model test successful!")
     wandb.log({"test_key": 1.0})

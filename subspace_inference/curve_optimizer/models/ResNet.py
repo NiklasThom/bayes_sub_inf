@@ -1,5 +1,4 @@
 from flax import linen as nn
-import jax.numpy as jnp
 from typing import Callable
 from subspace_inference.curve_optimizer.models import register_model
 

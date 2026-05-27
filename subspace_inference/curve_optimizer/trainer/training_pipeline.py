@@ -19,14 +19,7 @@ from flax.core import freeze
 
 from jax_tqdm import scan_tqdm
 from subspace_inference.curve_optimizer.utils import (
-    calibration_error as ece_fn,
-    post_pred_performance,
     bezier_length,
-    lower_bound,
-    upper_bound,
-    bezier_mass_center,
-    bezier_gyration,
-    bezier_rel_center,
 )
 
 # Project imports
@@ -65,11 +58,6 @@ WANDB_PROJECT = os.environ.get("WANDB_PROJECT", "curve_optimizer")
 WANDB_PATH = f"{WANDB_ENTITY}/{WANDB_PROJECT}"
 # import sys
 # sys.setrecursionlimit(200)
-
-
-from subspace_inference.curve_optimizer.models.qwen_jax import (
-    QwenTextClassificationWrapper,
-)
 
 
 @dataclass
@@ -151,9 +139,9 @@ class TrainHyperparams:
         # Compute num_epochs / num_steps from data size
         num_epochs_cfg = th.get("num_epochs", -1)
         num_steps_cfg = th.get("num_steps", -1)
-        assert not ((num_epochs_cfg > 0) and (num_steps_cfg > 0)), (
-            "Only one of num_epochs or num_steps should be > 0"
-        )
+        assert not (
+            (num_epochs_cfg > 0) and (num_steps_cfg > 0)
+        ), "Only one of num_epochs or num_steps should be > 0"
         has_train_data = num_epochs_cfg > 0 or num_steps_cfg > 0
         if has_train_data:
             assert data.train_x is not None
@@ -351,17 +339,19 @@ class ModelParams:
     def cp_fix(self) -> list:
         """Generate cp_fix based on segments and pretraining."""
         if self.Pretraining is False:
-            assert self.k > 0, (
-                "no Pretraining/ no single mode or DE training => should be curve training with k > 0"
-            )
+            assert (
+                self.k > 0
+            ), "no Pretraining/ no single mode or DE training => should be curve training with k > 0"
         k = self.k
         if not self.Pretraining:
             return [0] * (k + 1)
 
         # Safe-guard for pretraining mode (k=0) to prevent ZeroDivisionError
         if self.num_curve_segment == 0:
-        # if k == 0:
-            return [1,] * self.SegDeg 
+            # if k == 0:
+            return [
+                1,
+            ] * self.SegDeg
 
         # Fixed endpoints of each segment
         cp_fix = [0] * (k + 1)
@@ -897,9 +887,9 @@ def run_evaluation(
         test_x, test_y = data.get("test")
         print("Evaluating test set (k=0)")
         _, logits = _logits(test_x, test_y, n_samples=1, key_prefix="test_")
-        assert logits.shape[0] == 1, (
-            f"Expected single sample for k=0 evaluation, got {logits.shape[0]}"
-        )
+        assert (
+            logits.shape[0] == 1
+        ), f"Expected single sample for k=0 evaluation, got {logits.shape[0]}"
         pp = s_model.evaluate(logits[0], test_y, key_prefix="test_", weights=False)
         logger.summary.update({f"{logger_prefix}test_{mk}": v for mk, v in pp.items()})
         return {"test_logits": logits}
@@ -1165,9 +1155,9 @@ def _init_subspace_params(
     if fixed_cps_train_params is not False:
         assert isinstance(fixed_cps_train_params, list)
         k = s_model.k
-        assert len(fixed_cps_train_params) == (k + 1), (
-            "fixed_cps_train_params length must match k or be False"
-        )
+        assert len(fixed_cps_train_params) == (
+            k + 1
+        ), "fixed_cps_train_params length must match k or be False"
         for i, p in enumerate(fixed_cps_train_params):
             if p is not False:
 
@@ -1250,7 +1240,6 @@ def _make_train_batch_fn(
     empty_metric = env.empty_metric
     get_best_params = env.get_best_params
     eval_every_n_batch = config.train_hyper.eval_every_n_batch
-    k = s_model.k
     lora_rho, lora_rho_s = config.model_params.lora_rho_values
 
     def train_batch(carry, batch_idx):
@@ -1696,7 +1685,6 @@ def _setup_training_env(
         elif hp.ds_sampling == "minibatch":
             train_x, train_y = data.get("train")
             # Reshape into (num_batches, batch_size, ...)
-            n_train_actual = len(jax.tree.leaves(train_y)[0])
             n_batches = hp.num_steps
             n_epochs = hp.num_epochs if hp.num_epochs > 0 else 1
 
@@ -2121,7 +2109,6 @@ def main():
 
     # Qwen-specific setup
     rng_key = random.PRNGKey(config_dict["rng_seed"])
-    artifact = wandb.Artifact(name="params", type="pytree")
 
     # Resolve model path from wandb if a local path is not given
     net_kwargs = dict(config_dict["net_kwargs"])
@@ -2162,6 +2149,9 @@ def train(logger, config: Config, data: DataSplits):
     Returns:
         (env, params, config) - TrainingEnv, final params, and config for further evaluation
     """
+    # Initialize rng_key from config
+    rng_key = random.PRNGKey(config.rng_seed)
+
     # Create artifact if saving params is enabled
     artifact = (
         wandb.Artifact(name="params", type="pytree")
@@ -2183,9 +2173,6 @@ def train(logger, config: Config, data: DataSplits):
             train_y=train_y,
         )
 
-    # Initialize rng_key from config
-    rng_key = random.PRNGKey(config.rng_seed)
-
     # Pretraining fixed control points (if any)
     pretrained_params = [False] * len(config.model_params.cp_fix)
     env = None
@@ -2201,14 +2188,20 @@ def train(logger, config: Config, data: DataSplits):
         )
     else:
         if config.model_params.SegDeg == 1:
-            assert pretrained_params[0] is not False, "Expected pretrained parameters for the single control point, but got False."
-            assert len(pretrained_params) == 1, f"Expected exactly one set of pretrained parameters for single control point, but got {len(pretrained_params)}."
+            assert (
+                pretrained_params[0] is not False
+            ), "Expected pretrained parameters for the single control point, but got False."
+            assert (
+                len(pretrained_params) == 1
+            ), f"Expected exactly one set of pretrained parameters for single control point, but got {len(pretrained_params)}."
             # If only one CP, skip the full curve training phase since it's redundant
-            params = {'params': pretrained_params[0]}
+            params = {"params": pretrained_params[0]}
         else:
             # DE mode
-            assert config.model_params.SegDeg == len(pretrained_params), f"Expected pretrained parameters for each control point segment, but got {len(pretrained_params)} sets of parameters for SegDeg {config.model_params.SegDeg}."
-            params = {'params': pretrained_params}
+            assert (
+                config.model_params.SegDeg == len(pretrained_params)
+            ), f"Expected pretrained parameters for each control point segment, but got {len(pretrained_params)} sets of parameters for SegDeg {config.model_params.SegDeg}."
+            params = {"params": pretrained_params}
 
     # Log artifact if enabled
     if config.train_hyper.save_params and artifact:

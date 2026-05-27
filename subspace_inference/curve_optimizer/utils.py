@@ -161,9 +161,9 @@ def post_pred_performance(
 def load_fn(m, p, pl):
     """Merge a loaded parameter into the current pytree leaf based on the train mask."""
     if m:
-        assert p.shape == pl.shape, (
-            f"Shape mismatch: current {p.shape} vs loaded {pl.shape}"
-        )
+        assert (
+            p.shape == pl.shape
+        ), f"Shape mismatch: current {p.shape} vs loaded {pl.shape}"
         return pl
     return p
 
@@ -228,9 +228,9 @@ def load_checkpoint_new(run, params, s_model):
             )
             print(f"Loaded pretrained_params from {f.name}")
 
-    assert trainable_params, (
-        f"trainable_params not found in artifact {artifact_use.name}"
-    )
+    assert (
+        trainable_params
+    ), f"trainable_params not found in artifact {artifact_use.name}"
 
     try:
         params["params"] = jax.tree.map(

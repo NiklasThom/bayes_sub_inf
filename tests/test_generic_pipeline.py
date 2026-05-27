@@ -1,8 +1,5 @@
-import os
 import jax
-import jax.numpy as jnp
 from jax import random
-import numpy as np
 import wandb
 from subspace_inference.curve_optimizer.trainer.training_pipeline import (
     Config,
@@ -67,20 +64,6 @@ def test_toy_pipeline():
     print("Starting toy training...")
     config = Config.from_dict(config_dict, data)
     env, params, config = train(logger, config, data)
-
-    print("Starting toy evaluation...")
-    s_model = env.s_model
-
-    t_space = jnp.linspace(0, 1, 100)
-    x_lin = jnp.linspace(-3, 3, 100)[:, None]
-
-    def predict_at_t(t_single):
-        out, _ = s_model(
-            params["params"], {}, t_single, x_lin, train=False, key=random.PRNGKey(0)
-        )
-        return out.squeeze(axis=-1)
-
-    out = jax.vmap(predict_at_t)(t_space)
 
     print("Toy pipeline verification successful!")
 

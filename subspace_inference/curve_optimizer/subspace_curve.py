@@ -6,11 +6,9 @@ import numpy as np
 from functools import partial
 from jax import custom_jvp
 from typing import Callable, Tuple, Any
-from numpyro import distributions as dist
 from jax.scipy.special import gammaln
 
 # from src.weight_matching import PermutationSpec, apply_permutation, weight_matching
-from flax import traverse_util
 from flax.core import freeze, unfreeze
 from jax.tree_util import register_pytree_node_class
 import math
@@ -389,56 +387,57 @@ class OrthoSpan:
         return (p - self.mu) @ self.pi_inv
 
 
-class BezierTspaceUnifrom(dist.Uniform):
-    def __init__(self, d_bezier, validate_args=None):
-        self.d_bezier = d_bezier
-        tt = jnp.linspace(0.0, 1.0, 1_000)
-        bezier_grad = jax.vmap(d_bezier)(tt)
-        length = jnp.trapezoid(jnp.linalg.norm(bezier_grad, axis=-1), tt)
-        self.total_length = length
-        logger.debug("Total length: %s", length)
-        super(BezierTspaceUnifrom, self).__init__(validate_args=validate_args)
+# to slow
+# class BezierTspaceUnifrom(dist.Uniform):
+#     def __init__(self, d_bezier, validate_args=None):
+#         self.d_bezier = d_bezier
+#         tt = jnp.linspace(0.0, 1.0, 1_000)
+#         bezier_grad = jax.vmap(d_bezier)(tt)
+#         length = jnp.trapezoid(jnp.linalg.norm(bezier_grad, axis=-1), tt)
+#         self.total_length = length
+#         logger.debug("Total length: %s", length)
+#         super(BezierTspaceUnifrom, self).__init__(validate_args=validate_args)
 
-    @staticmethod
-    def arc_length(t, d_bezier):
-        tt = jnp.linspace(0.0, t, 1_000)
-        grads = jax.vmap(d_bezier)(tt)
-        return jnp.trapezoid(jnp.linalg.norm(grads, axis=-1), tt)
+#     @staticmethod
+#     def arc_length(t, d_bezier):
+#         tt = jnp.linspace(0.0, t, 1_000)
+#         grads = jax.vmap(d_bezier)(tt)
+#         return jnp.trapezoid(jnp.linalg.norm(grads, axis=-1), tt)
 
-    def t_from_length(self, length):
-        def loss(t):
-            return self.arc_length(t, self.d_bezier) - length
+#     def t_from_length(self, length):
+#         def loss(t):
+#             return self.arc_length(t, self.d_bezier) - length
 
-        root_solver = Bisection(
-            loss, lower=0.0, upper=1.0, check_bracket=False, tol=1e-12, maxiter=30
-        )
-        return root_solver.run()
+#         root_solver = Bisection(
+#             loss, lower=0.0, upper=1.0, check_bracket=False, tol=1e-12, maxiter=30
+#         )
+#         return root_solver.run()
 
-    def sample(self, key, sample_shape=()):
-        s = random.uniform(key, sample_shape) * self.total_length
-        shape = s.shape
-        t = jax.vmap(self.t_from_length)(s.flatten())
-        return t.params.reshape(shape)
-        # return t
+#     def sample(self, key, sample_shape=()):
+#         s = random.uniform(key, sample_shape) * self.total_length
+#         shape = s.shape
+#         t = jax.vmap(self.t_from_length)(s.flatten())
+#         return t.params.reshape(shape)
+#         # return t
 
-    def log_prob(self, value):
-        absdet = jnp.linalg.norm(jax.vmap(self.d_bezier)(value), axis=-1)
-        return jnp.log(absdet) - jnp.log(self.total_length)
+#     def log_prob(self, value):
+#         absdet = jnp.linalg.norm(jax.vmap(self.d_bezier)(value), axis=-1)
+#         return jnp.log(absdet) - jnp.log(self.total_length)
 
-    def cdf(self, value):
-        raise NotImplementedError
+#     def cdf(self, value):
+#         raise NotImplementedError
 
-    def icdf(self, q):
-        raise NotImplementedError
+#     def icdf(self, q):
+#         raise NotImplementedError
 
-    def mean(self):
-        raise NotImplementedError
+#     def mean(self):
+#         raise NotImplementedError
 
-    def variance(self):
-        raise NotImplementedError
+#     def variance(self):
+#         raise NotImplementedError
 
-    def entropy(self):
-        raise NotImplementedError
+#     def entropy(self):
+#         raise NotImplementedError
 
 
 class SubspaceBaseModel:
@@ -557,9 +556,9 @@ class SubspaceBaseModel:
             - Non-curve parameters are reverted to their original values from `point['params']`.
             - The mask used for curve parameters is stored in `self.curve_mask`.
         """
-        assert ("params" in params) and len(params.keys()) == 1, (
-            "Point must contain 'params' key and no other keys."
-        )
+        assert ("params" in params) and len(
+            params.keys()
+        ) == 1, "Point must contain 'params' key and no other keys."
 
         # add a dimension if mask is true and initialize with noise function or repeate LoRA A matrix initialization
         # use the same weight matrix initialization as Hugging Face PEFT library does for the LoRA A matrix
@@ -991,16 +990,28 @@ class CategorySubspace(SubspaceBaseModel):
         # Compute BMA metrics from ensemble predictions
         post_acc = jnp.mean(jnp.argmax(post_predict_logits, axis=-1) == y, axis=-1)
         if post_predict_logits.ndim == 3:
-            ll = jnp.take_along_axis(log_probs, y[None, :, None], axis=-1).squeeze(-1).mean(axis=-1)  # (n_samples,)
-            post_ece = jax.vmap(calibration_error, in_axes=(0, None, None))(post_predict_logits, y, 15)
+            ll = (
+                jnp.take_along_axis(log_probs, y[None, :, None], axis=-1)
+                .squeeze(-1)
+                .mean(axis=-1)
+            )  # (n_samples,)
+            post_ece = jax.vmap(calibration_error, in_axes=(0, None, None))(
+                post_predict_logits, y, 15
+            )
         else:
             post_ece = calibration_error(post_predict_logits, y, num_bins=15)
-            ll = jnp.take_along_axis(post_predict_logits, y[:, None], axis=-1).squeeze(-1).mean(axis=-1) # scalar
+            ll = (
+                jnp.take_along_axis(post_predict_logits, y[:, None], axis=-1)
+                .squeeze(-1)
+                .mean(axis=-1)
+            )  # scalar
 
         # Brier score
         post_predict_probs = jax.nn.softmax(post_predict_logits)
         true_probs = jax.nn.one_hot(y, post_predict_logits.shape[-1])
-        brier = jnp.mean(jnp.sum((post_predict_probs - true_probs) ** 2, axis=-1), axis=-1)
+        brier = jnp.mean(
+            jnp.sum((post_predict_probs - true_probs) ** 2, axis=-1), axis=-1
+        )
 
         metrics = {
             f"{key_prefix}ll": ll,
@@ -1010,7 +1021,7 @@ class CategorySubspace(SubspaceBaseModel):
         }
 
         # Compute uncertainty metrics
-        
+
         if logits.ndim >= 3:
             uniform_probs = jax.nn.softmax(logits, axis=-1)
 
@@ -1035,10 +1046,12 @@ class CategorySubspace(SubspaceBaseModel):
 
             if weights is not None and weights is not False:
                 # Mean entropy along curve (averaged over data points for each sample)
-                mean_entropy_along_curve = per_sample_entropy.mean(axis=1)  # (n_samples,)
-                metrics[f"{key_prefix}mean_entropy_along_curve"] = (
-                    mean_entropy_along_curve  # Array for plotting
-                )
+                mean_entropy_along_curve = per_sample_entropy.mean(
+                    axis=1
+                )  # (n_samples,)
+                metrics[
+                    f"{key_prefix}mean_entropy_along_curve"
+                ] = mean_entropy_along_curve  # Array for plotting
         else:
             # If no samples dimension, set uncertainty metrics to defaults
             metrics[f"{key_prefix}mutual_information"] = jnp.array(
@@ -1132,16 +1145,17 @@ class RegressionSubspace(SubspaceBaseModel):
             )  # (n_data, 1)
         else:
             raise ValueError("Invalid weights shape for ensemble averaging.")
-        ensemble_pred = ensemble_pred.squeeze(axis=-1)  # (n_data,) or (n_samples, n_data)
+        ensemble_pred = ensemble_pred.squeeze(
+            axis=-1
+        )  # (n_data,) or (n_samples, n_data)
 
         mse = jnp.mean(jnp.square(ensemble_pred - y), axis=-1)
         mae = jnp.mean(jnp.abs(ensemble_pred - y), axis=-1)
         ll = jnp.mean(
             jax.scipy.stats.norm.logpdf(
-                y,
-                loc=ensemble_pred,
-                scale=jnp.exp(self.log_scale) + 1e-8
-            ), axis=-1
+                y, loc=ensemble_pred, scale=jnp.exp(self.log_scale) + 1e-8
+            ),
+            axis=-1,
         )
 
         metrics = {
@@ -1191,9 +1205,9 @@ class DistRegressionSubspace(SubspaceBaseModel):
         # initialize log scale
         params["params"]["log_scale"] = self.init_log_scale
         logger.debug("curve_mask: %s", self.curve_mask)
-        self.curve_mask["log_scale"] = (
-            False  # mask log_scale parameter as non curve parameter
-        )
+        self.curve_mask[
+            "log_scale"
+        ] = False  # mask log_scale parameter as non curve parameter
         return params
 
     # @partial(jit, static_argnums=(0,), donate_argnums=(2,))
@@ -2227,9 +2241,9 @@ class LoRAMixin:
         Returns:
             _type_: _description_
         """
-        assert ("params" in params) and len(params.keys()) == 1, (
-            "Point must contain 'params' key and no other keys."
-        )
+        assert ("params" in params) and len(
+            params.keys()
+        ) == 1, "Point must contain 'params' key and no other keys."
 
         def initialize_lora_params(rng_key, params, lora_mask, rank):
             """
@@ -2263,12 +2277,12 @@ class LoRAMixin:
                 param_name = "/".join([k.key for k in key])
                 # change to a lora param
                 if not isinstance(m, bool):
-                    assert p.ndim > 1, (
-                        f"Param {param_name} cannot be used for LoRA. Too few dimensions for parameter with shape {p.shape}"
-                    )
-                    assert p.ndim > np.max(m), (
-                        f"Mask {m} incompatible with param {param_name} and shape {p.shape}"
-                    )
+                    assert (
+                        p.ndim > 1
+                    ), f"Param {param_name} cannot be used for LoRA. Too few dimensions for parameter with shape {p.shape}"
+                    assert (
+                        p.ndim > np.max(m)
+                    ), f"Mask {m} incompatible with param {param_name} and shape {p.shape}"
                     dtype = self.get_dtype(p)
                     B = jnp.zeros(shape_builder(p.shape, m[1]), dtype=dtype)
                     B = jnp.moveaxis(
