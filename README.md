@@ -121,9 +121,9 @@ Automatically runs after training. Supports multiple evaluation modes via `curve
 
 ## Extending the Framework
 
-### Adding Custom DNN Backbones
+### Adding Custom DNN Backbones (using `@register_model`)
 
-Create task-agnostic neural network architectures in `subspace_inference/curve_optimizer/models/`:
+Create task-agnostic neural network architectures in `subspace_inference/curve_optimizer/models/` using the `@register_model` decorator:
 
 ```python
 # subspace_inference/curve_optimizer/models/my_model.py

@@ -90,9 +90,9 @@ This configuration sets `k=0` (single control point) and trains/evaluates a stan
 
 ## Custom Model Development
 
-### Custom DNN Backbones
+### Custom DNN Backbones (using `@register_model`)
 
-To add a new neural network architecture:
+To add a new neural network architecture using the `@register_model` decorator:
 
 1. Create model file in `subspace_inference/curve_optimizer/models/my_model.py`:
 
