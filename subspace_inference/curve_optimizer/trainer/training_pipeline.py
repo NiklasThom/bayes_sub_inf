@@ -1306,6 +1306,45 @@ def _make_train_batch_fn(
     return train_batch
 
 
+def _make_train_epoch_fn(
+    env: "TrainingEnv",
+    config: "Config",
+    *,
+    train_x,
+    train_y,
+):
+    """Return a ``train_epoch(carry, epoch)`` closure for ``jax.lax.scan``.
+
+    Shuffles the dataset at the start of each epoch and drops the last incomplete
+    batch. Internally creates the per-batch function via ``_make_train_batch_fn``.
+    ``initial_cp_center`` is expected in position 6 of the carry tuple.
+    """
+    hp = config.train_hyper
+    train_batch_fn = _make_train_batch_fn(
+        env,
+        config,
+        train_x=train_x,
+        train_y=train_y,
+    )
+    n_train_samples = len(jax.tree.leaves(train_x)[0])
+    batch_size = hp.batch_size
+    num_epochs = hp.num_epochs
+    n_batches = n_train_samples // batch_size
+
+    @scan_tqdm(num_epochs)
+    def train_epoch(carry, epoch):
+        rng_key = carry[0]
+        rng_key, subkey = random.split(rng_key)
+        shuffled_idx = random.permutation(subkey, n_train_samples)
+        shuffled_idx = shuffled_idx[: n_batches * batch_size]
+        shuffled_idx = es("(ib)->ib", shuffled_idx, b=batch_size)
+
+        carry, metrics = jax.lax.scan(train_batch_fn, carry, shuffled_idx)
+        return carry, metrics
+
+    return train_epoch
+
+
 def _make_expert_step_fn(env: "TrainingEnv", config: "Config", *, window_size):
     """Return a ``_train_expert_step(carry, step)`` closure for ``jax.lax.scan``."""
     s_model = env.s_model
@@ -1688,46 +1727,12 @@ def _setup_training_env(
             train_step = _make_expert_step_fn(env, config, window_size=window_size)
         elif hp.ds_sampling == "minibatch":
             train_x, train_y = data.get("train")
-            # Reshape into (num_batches, batch_size, ...)
-            n_batches = hp.num_steps
-            n_epochs = hp.num_epochs if hp.num_epochs > 0 else 1
-
-            def reshape_ds(leaf):
-                n_take = min(n_batches * hp.batch_size, leaf.shape[0])
-                n_batches_actual = n_take // hp.batch_size
-                return leaf[: n_batches_actual * hp.batch_size].reshape(
-                    n_batches_actual, hp.batch_size, *leaf.shape[1:]
-                )
-
-            train_x_batches = jax.tree.map(reshape_ds, train_x)
-            train_y_batches = jax.tree.map(reshape_ds, train_y)
-            n_batches_reshaped = train_y_batches.shape[0]
-
-            train_batch_fn = _make_train_batch_fn(
+            train_step = _make_train_epoch_fn(
                 env,
                 config,
-                train_x=train_x_batches,
-                train_y=train_y_batches,
+                train_x=train_x,
+                train_y=train_y,
             )
-
-            def train_step(carry, xs):
-                # xs is epoch indices
-                n_batches_per_epoch = n_batches_reshaped // n_epochs
-
-                def epoch_fn(carry_epoch, epoch_idx):
-                    batch_indices = (
-                        jnp.arange(n_batches_per_epoch)
-                        + epoch_idx * n_batches_per_epoch
-                    )
-
-                    return jax.lax.scan(train_batch_fn, carry_epoch, batch_indices)
-
-                # Use a simple loop for epochs instead of jax.lax.scan to bypass structure issues
-                # No, that's not possible inside JIT.
-                # Let's try to flatten the scan.
-                all_batch_indices = jnp.arange(n_batches_reshaped)
-                return jax.lax.scan(train_batch_fn, carry, all_batch_indices)
-
         else:
             raise ValueError(
                 f"Unknown dataset_sampling method {hp.ds_sampling}. "

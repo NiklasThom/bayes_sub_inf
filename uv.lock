@@ -1804,22 +1804,6 @@ wheels = [
 ]
 
 [[package]]
-name = "numpyro"
-version = "0.15.3"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "jax" },
-    { name = "jaxlib" },
-    { name = "multipledispatch" },
-    { name = "numpy" },
-    { name = "tqdm" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/4c/d7/9450010fd797f6d7e2dfdf34fde29acdb9e2b0d9c89e710f695d1cd3a94a/numpyro-0.15.3.tar.gz", hash = "sha256:f445eeae6200f883d790d65ce29ff245f7a9639bac3322d993eccf91c44023b3", size = 378385, upload-time = "2024-09-17T23:22:27.765Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/0d/1e/60a950feff00a3cbaa9fd31786cf82a97ae3986f21f8c23f3eca1c1415d7/numpyro-0.15.3-py3-none-any.whl", hash = "sha256:12b4817868c0b2b5ab4fc09879896c8d39e84a0d47da7525d835569654354480", size = 351144, upload-time = "2024-09-17T23:22:26.009Z" },
-]
-
-[[package]]
 name = "nvidia-cublas-cu12"
 version = "12.9.2.10"
 source = { registry = "https://pypi.org/simple" }
@@ -2805,7 +2789,6 @@ dependencies = [
     { name = "jax-tqdm" },
     { name = "jaxlib" },
     { name = "jaxopt" },
-    { name = "numpyro" },
     { name = "optax" },
     { name = "scipy", version = "1.15.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
@@ -2850,7 +2833,6 @@ requires-dist = [
     { name = "jupyter-bokeh", marker = "extra == 'viz'", specifier = ">=4.0.5,<5.0.0" },
     { name = "matplotlib", marker = "extra == 'viz'", specifier = ">=3.9.0,<4.0.0" },
     { name = "notebook", marker = "extra == 'viz'", specifier = ">=7.2.1,<8.0.0" },
-    { name = "numpyro", specifier = ">=0.15.0,<0.16.0" },
     { name = "optax", specifier = ">=0.2.0,<0.3.0" },
     { name = "pandas", marker = "extra == 'viz'", specifier = ">=2.2.2,<3.0.0" },
     { name = "scipy", specifier = ">=1.10.0,<2.0.0" },
