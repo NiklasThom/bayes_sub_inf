@@ -286,6 +286,7 @@ class ModelParams:
     vocab_size: int = 151936
 
     n_samples_eval: int | str = 20
+    additional_submodel_kwargs: dict = field(default_factory=dict)
 
     @classmethod
     def from_config_dict(cls, mp: dict) -> "ModelParams":
@@ -326,6 +327,7 @@ class ModelParams:
             target_jsd=mp.get("target_jsd", 0.1),
             noise_rate=mp.get("noise_rate", 0.1),
             vocab_size=mp.get("vocab_size", 151936),
+            additional_submodel_kwargs=mp.get("additional_submodel_kwargs", {}),
         )
         print(f"Computed cp_fix: {res.cp_fix}")
         return res
@@ -415,6 +417,8 @@ class ModelParams:
             d["vocab_size"] = self.vocab_size
         if self.lora_params and self.lora_params.use_lora:
             d.update(self.lora_params.model_kwargs())
+        # Additional kwargs for custom subspace models
+        d.update(self.additional_submodel_kwargs)
         return d
 
     @property

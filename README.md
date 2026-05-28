@@ -186,6 +186,24 @@ from subspace_inference.curve_optimizer.subspace_curve import (
 class MyTaskSubspace(SubspaceBaseModel):
     """Custom subspace model for my task."""
 
+    def __init__(
+        self,
+        model,
+        k,
+        custom_param_1=None,
+        **kwargs,
+    ):
+        """Initialize custom subspace model.
+
+        Args:
+            model: Under neural network model
+            k: Bézier curve degree
+            custom_param_1: Custom parameter for task-specific functionality
+            **kwargs: Additional arguments passed to SubspaceBaseModel
+        """
+        super().__init__(model, k, **kwargs)
+        self.custom_param_1 = custom_param_1
+
     # Required: Define empty metric template
     empty_metric = {
         "ll": jnp.array(-jnp.inf, dtype=jnp.float32),
@@ -258,6 +276,9 @@ class MyTaskSubspace(SubspaceBaseModel):
 config_dict = {
     "model_params": {
         "subspace_model": "my_task",
+        "additional_submodel_kwargs": {
+            "custom_param_1": value1,  # Custom parameter for MyTaskSubspace
+        },
     },
 }
 ```
@@ -270,6 +291,7 @@ config_dict = {
 - `evaluate()` receives sampled logits and returns metrics dict
 - Use `@register_subspace_model("name")` decorator
 - Mixins (LoRA, Repulsive, JSD, etc.) can be combined via multiple inheritance
+- Use `additional_submodel_kwargs` to pass custom parameters to your model constructor
 
 ## Contributing
 
