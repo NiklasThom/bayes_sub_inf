@@ -1820,6 +1820,11 @@ def run_training(rng_key, env, params, data, config: "Config", logger, logger_pr
     # Log all metrics
     _ = [logger.log(dict(zip(metrics.keys(), m))) for m in zip(*metrics.values())]
 
+    # check for nans
+    assert jnp.isfinite(
+        metrics["nll"]
+    ).all(), f"Expected nll to be finite for all steps; only finit until {jnp.argmin(jnp.isfinite(metrics['nll']))} steps"
+
     # Log metrics as artifact
     batches_per_epoch = hp.num_steps // max(hp.num_epochs, 1)
     epochs = np.repeat(np.arange(hp.num_epochs), batches_per_epoch)

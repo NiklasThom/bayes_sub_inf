@@ -1492,7 +1492,7 @@ class JensenShannonMixin:
             )
         return loss.squeeze(), (
             state,
-            {"nll1": nll.mean(), "nll2": nll2.mean(), "jsd": jsd},
+            {"nll": nll.mean(), "nll2": nll2.mean(), "jsd": jsd},
         )
 
 
@@ -1542,7 +1542,7 @@ class JensenShannonMixin_v2:
             )
         return loss.squeeze(), (
             state,
-            {"nll1": nll1.mean(), "nll2": nll2.mean(), "jsd": jsd},
+            {"nll": nll1.mean(), "nll2": nll2.mean(), "jsd": jsd},
         )
 
 
@@ -1620,7 +1620,7 @@ class JensenShannonNoiseMixin:
             )
         return loss.squeeze(), (
             state,
-            {"nll1": nll1.mean(), "nll2": nll2.mean(), "jsd_ood": jsd_ood},
+            {"nll": nll1.mean(), "nll2": nll2.mean(), "jsd_ood": jsd_ood},
         )
 
 
@@ -1711,7 +1711,7 @@ class JensenShannonNoiseSamplingMixin:
             )
         return loss.squeeze(), (
             state,
-            {"nll1": nll1.mean(), "nll2": nll2.mean(), "jsd_ood": jsd_ood},
+            {"nll": nll1.mean(), "nll2": nll2.mean(), "jsd_ood": jsd_ood},
         )
 
 
@@ -1817,7 +1817,7 @@ class JensenShannonNoiseSamplingDropoutMixin:
             )
         return loss.squeeze(), (
             state,
-            {"nll1": nll1.mean(), "nll2": nll2.mean(), "jsd_ood": jsd_ood},
+            {"nll": nll1.mean(), "nll2": nll2.mean(), "jsd_ood": jsd_ood},
         )
 
 
