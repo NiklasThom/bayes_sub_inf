@@ -36,3 +36,6 @@ from subspace_inference.curve_optimizer.models.ResNet import (  # noqa: E402
     PreActResNetBlock,  # noqa: F401
 )
 from subspace_inference.curve_optimizer.models.LeNet import LeNet, LeNetti  # noqa: F401, E402
+from subspace_inference.curve_optimizer.models.qwen_jax import (  # noqa: E402
+    QwenTextClassificationWrapper,  # noqa: F401, E402
+)

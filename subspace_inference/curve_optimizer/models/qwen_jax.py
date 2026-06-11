@@ -7,6 +7,7 @@ import flax.linen as nn
 from flax.core import unfreeze, freeze
 import json
 import os
+from subspace_inference.curve_optimizer.models import register_model
 
 
 def rotate_half(x):
@@ -338,6 +339,7 @@ class QwenForCausalLM(nn.Module):
         return logits
 
 
+@register_model("qwen")
 class QwenTextClassificationWrapper:
     """
     Wrapper class for Qwen2.5 model to interface with SubspaceBaseModel

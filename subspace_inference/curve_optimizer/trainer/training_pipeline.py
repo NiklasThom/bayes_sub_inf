@@ -6,7 +6,6 @@ Following the PtoC (Point-to-Curve) pattern from other models
 from copy import deepcopy
 import os
 import logging
-import argparse
 import numpy as np
 import jax
 import jax.numpy as jnp
@@ -23,9 +22,6 @@ from subspace_inference.curve_optimizer.utils import (
 )
 
 # Project imports
-from subspace_inference.curve_optimizer.datasets.text_classification import (
-    load_text_classification_dataset,
-)
 from subspace_inference.curve_optimizer.subspace_curve import (
     SubspaceBaseModel,
     masked_pytree_to_matrix,
@@ -1129,7 +1125,7 @@ def _init_subspace_params(
     """
     lora_params = config.model_params.lora_params
     params = s_model.model.init(
-        init_key, jax.tree.map(lambda leaf: leaf[:1], data.train_x)
+        init_key, jax.tree.map(lambda leaf: leaf[:4], data.train_x)
     )  # base parameters loaded from file
 
     curve_mask, train_mask, lora_mask = config.build_masks(params["params"])
@@ -1863,84 +1859,6 @@ def run_training(rng_key, env, params, data, config: "Config", logger, logger_pr
 # ---------------------------------------------------------------------------
 
 
-def _prepare_datasets(
-    rng_key, dataset_path, val_percentage, batch_size, smoke_test, logger
-):
-    """Load data and prepare train / val / test splits.
-
-    Args:
-        rng_key: JAX random key used for the train/val shuffle permutation.
-        dataset_path: Path or wandb artifact reference for the dataset.
-        val_percentage: Fraction of training data to reserve for validation.
-        batch_size: Used to batch-align the train split so every epoch
-            contains whole batches.  When *smoke_test* is True the dataset
-            is also truncated to ``3 * batch_size`` training samples.
-        smoke_test: Truncate dataset to a small size for fast iteration.
-        logger: wandb run used when resolving artifact dataset paths.
-
-    Returns:
-        ``(data, unique_target_ids, rng_key)``
-    """
-    # Load train and test data
-    x, y, unique_target_ids = load_text_classification_dataset(dataset_path, run=logger)
-    n_samples = len(jax.tree.leaves(y)[0])
-    print(f"Dataset loaded: {n_samples} samples, {len(unique_target_ids)} classes")
-
-    test_x, test_y, _ = load_text_classification_dataset(
-        dataset_path, run=logger, test=True
-    )
-
-    print(f"Target token IDs: {unique_target_ids}")
-
-    # Shuffle and split into train / val
-    rng_key, split_key = random.split(rng_key)
-    perm_idx = random.permutation(split_key, n_samples)
-    ordered_x = jax.tree.map(lambda leaf: leaf[perm_idx], x)
-    ordered_y = jax.tree.map(lambda leaf: leaf[perm_idx], y)
-
-    n_train = int(
-        np.floor((1.0 - val_percentage) * n_samples / batch_size) * batch_size
-    )
-    train_x = jax.tree.map(lambda leaf: leaf[:n_train], ordered_x)
-    train_y = jax.tree.map(lambda leaf: leaf[:n_train], ordered_y)
-
-    has_val = val_percentage > 0.0 and (n_samples - n_train) > 0
-    val_x = jax.tree.map(lambda leaf: leaf[n_train:], ordered_x) if has_val else None
-    val_y = jax.tree.map(lambda leaf: leaf[n_train:], ordered_y) if has_val else None
-
-    # Smoke-test truncation: keep only a few batches so the run finishes fast
-    if smoke_test:
-        n_smoke = 3 * batch_size
-        train_x = jax.tree.map(lambda leaf: leaf[:n_smoke], train_x)
-        train_y = jax.tree.map(lambda leaf: leaf[:n_smoke], train_y)
-        if has_val:
-            val_x = jax.tree.map(lambda leaf: leaf[:batch_size], val_x)
-            val_y = jax.tree.map(lambda leaf: leaf[:batch_size], val_y)
-        test_x = jax.tree.map(lambda leaf: leaf[:n_smoke], test_x)
-        test_y = jax.tree.map(lambda leaf: leaf[:n_smoke], test_y)
-        print(f"Smoke test: dataset truncated to {n_smoke} train samples")
-
-    if has_val:
-        print("Validation data are used")
-
-    n_train_actual = len(jax.tree.leaves(train_y)[0])
-    n_val_actual = len(jax.tree.leaves(val_y)[0]) if has_val else 0
-    print(
-        f"Training data: {n_train_actual} samples, Validation data: {n_val_actual} samples"
-    )
-
-    data = DataSplits(
-        train_x=train_x,
-        train_y=train_y,
-        val_x=val_x,
-        val_y=val_y,
-        test_x=test_x,
-        test_y=test_y,
-    )
-
-    return data, unique_target_ids, rng_key
-
-
 def _pretrain_fixed_cps(rng_key, config: "Config", data, logger, artifact):
     """Train each fixed control point independently (k=0).
 
@@ -2111,43 +2029,6 @@ def _train_full_curve(rng_key, config: "Config", data, train_params, logger, art
     return env, params, rng_key
 
 
-def main():
-    """Main entry point for Qwen curve fine-tuning.
-
-    This is a Qwen-specific example showing how to use the generic train() function.
-    For other model types, see the test scripts or create your own entry point.
-    """
-    jax.config.update("jax_explain_cache_misses", True)
-    logger = wandb.init()
-    config_dict = dict(wandb.config)  # type: ignore[arg-type]
-
-    # Qwen-specific setup
-    rng_key = random.PRNGKey(config_dict["rng_seed"])
-
-    # Resolve model path from wandb if a local path is not given
-    net_kwargs = dict(config_dict["net_kwargs"])
-    if net_kwargs["model_path"].startswith("ddold/"):
-        model_artifact = logger.use_artifact(net_kwargs["model_path"], type="model")
-        net_kwargs["model_path"] = model_artifact.download()
-    config_dict["net_kwargs"] = net_kwargs
-
-    data, unique_target_ids, rng_key = _prepare_datasets(
-        rng_key,
-        dataset_path=config_dict["data"]["dataset_path"],
-        val_percentage=config_dict["data"].get("val_percentage", 0.0),
-        batch_size=config_dict["train_hyper"]["batch_size"],
-        smoke_test=config_dict["train_hyper"].get("smoke_test", False),
-        logger=logger,
-    )
-
-    config_dict["net_kwargs"]["target_token_ids"] = unique_target_ids
-    config = Config.from_dict(config_dict, data)
-
-    # Call generic train function
-    env, params, config = train(logger, config, data)
-    logger.finish()
-
-
 def train(logger, config: Config, data: DataSplits):
     """Generic training orchestrator for any model type.
 
@@ -2224,164 +2105,3 @@ def train(logger, config: Config, data: DataSplits):
         print("Logged artifact with parameters.")
 
     return env, params, config
-
-
-if __name__ == "__main__":
-    # Add requirement for wandb core
-    wandb.require("core")  # type: ignore[attr-defined]
-    os.makedirs("tmp_files", exist_ok=True)
-
-    parser = argparse.ArgumentParser(
-        description="Train a single model or a curve model."
-    )
-    # parser.add_argument("--train", choices=["single", "curve"], required=True, help="Specify the training mode: 'single' for single model training, 'curve' for curve model training.")
-    parser.add_argument(
-        "--use-sweep", action="store_true", help="Use sweep configuration."
-    )
-    parser.add_argument(
-        "--batch-size",
-        type=int,
-        default=16,
-        help="batch size for training. Default is 16.",
-    )
-    parser.add_argument(
-        "--cp-fix",
-        type=int,
-        nargs="+",
-        default=[1, 0, 1],
-        help=" number of control points as list where 1 means p is fixed and 0 means p is trainable as curve. Default is [1,0,1].",
-    )
-    parser.add_argument(
-        "--smoke-test",
-        action="store_true",
-        help="Run a quick smoke test with reduced epochs (2) and batch iterations (3).",
-    )
-
-    args = parser.parse_args()
-
-    print("Curve training")
-    if args.use_sweep:
-        print("Using wandb config")
-        logger = wandb.init()
-        config = wandb.config
-        train(logger, config)
-    else:
-        print("Using predefined config")
-
-        config = {
-            # --- Run / experiment --------------------------------------------------
-            "rng_seed": 2,
-            # 'load_params_path': WANDB_PATH + "/47xexal3",
-            "load_params_path": False,
-            # --- Data --------------------------------------------------------------
-            "data": {
-                # 'dataset_path': WANDB_PATH + "/winogrande_m_dataset:v0",
-                # 'dataset_path': WANDB_PATH + "/boolq_dataset:v0",
-                "dataset_path": WANDB_PATH + "/ARC-Easy_dataset:v0",
-                # 'dataset_path': WANDB_PATH + "/MMLU_chem_dataset:v0",
-                # "dataset_path": WANDB_PATH + "/obqa_dataset:v0",
-                "val_percentage": 0.1,
-            },
-            # --- Base model --------------------------------------------------------------
-            # 'target_token_ids' is injected automatically after dataset load
-            "net_kwargs": {
-                "model_type": "qwen",
-                "model_path": "artifacts/qwen2.5_0.5B_bfloat16:v0",
-            },
-            # 'net_kwargs': {'model_path': WANDB_PATH + "/qwen2.5_7B_bfloat16:v0"},
-            # --- Training hyperparameters → TrainHyperparams ----------------------
-            # These control *how* training runs, not *what* is built.
-            "train_hyper": {
-                "batch_size": args.batch_size,
-                "num_epochs": -1,  # -1 means use num_steps instead
-                "num_steps": 10 if args.smoke_test else 10_000,
-                "eval_every_n_batch": 200,
-                "temperature": [1.0],
-                "dataset_sampling": {"minibatch": {}},
-                # 'dataset_sampling': {'expert': {'window_size': 4, 'sort_mode': False}},
-                "save_params": True,
-                "smoke_test": args.smoke_test,
-            },
-            # --- Subspace model + LoRA architecture → ModelParams -----------------
-            # All parameters that determine *what* the subspace model is.
-            "model_params": {
-                "n_samples_eval": 10,
-                "num_curve_segment": 2,  # int → segmented degree; False → full curve
-                "SegDeg": 2,  # degree of each curve segment if num_curve_segment is set
-                "Pretraining": False,  # whether this is the k=0 pretraining phase with fixed CPs
-                "curve_sampling_mode": "combined_test",  # 'per_leave' | 'combined_train' | 'combined_val' | 'combined_all' | 'combined_noBMA'
-                # "subspace_model": "jsd_noise_sampling_category",
-                "subspace_model": "jsd_noise_sampling_dropout_category",
-                "jitter_multiplier": 0.0,  # weight-init noise scale
-                "natural_parameterization": False,
-                "weight_decay": 0.0,
-                "curve_parameterization": "bezier",
-                "indepent_connected": False,  # True → independently connected segments
-                "entropy_weight": 5.0,
-                "target_jsd": 0.1,
-                "noise_rate": 0.05,
-                # curve topology: which parameters become the Bézier curve
-                "filter_masks": [
-                    {"keys": ["self_attn", "q_proj", "kernel"], "op": "all"},
-                    {"keys": ["self_attn", "v_proj", "kernel"], "op": "all"},
-                    {"keys": ["lm_head", "kernel"], "op": "all"},
-                ],
-                # LoRA sub-config (architecture + noise scheduling)
-                "lora_params": {
-                    "use_lora": True,
-                    "r": 8,
-                    "lora_dtype": "float32",
-                    "lora_alpha": 16.0,
-                    "lora_mode": "A(t)eB(t)",
-                    # 'lora_mode': 'Arotsd(t)eB',
-                    # 'lora_mode': 'Arot(t)sdeBrot(t)',
-                    "rho_scheduler_frequency": 50.0,
-                    "lora_rho": 0.25,
-                    "lora_rho_s": 0.0,
-                    "filter_masks": [
-                        {
-                            "keys": ["self_attn", "q_proj", "kernel"],
-                            "op": "all",
-                            "dims": [1, 0],
-                        },
-                        {
-                            "keys": ["self_attn", "v_proj", "kernel"],
-                            "op": "all",
-                            "dims": [1, 0],
-                        },
-                        {"keys": ["lm_head", "kernel"], "op": "all", "dims": [1, 0]},
-                    ],
-                },
-            },
-            # --- Optimizer ---------------------------------------------------------
-            "optimizer_conf": {
-                "name": "adamw",
-                "kwargs": {
-                    "learning_rate": {
-                        "name": "linear_onecycle_schedule",
-                        "kwargs": {
-                            "transition_steps": 10_000,
-                            "peak_value": 1e-4,
-                            "pct_start": 0.12,
-                            "pct_final": 1.0,
-                            "div_factor": 300.0,
-                            "final_div_factor": 300.0,
-                        },
-                    },
-                    "weight_decay": 0.001,
-                },
-                "freeze_other_params": True,
-                # SGD alternative:
-                # 'name': "sgd",
-                # 'kwargs': {'learning_rate': 0.0001, 'momentum': 0.9, 'nesterov': True},
-                # 'grad_clip_norm': 100.0,
-            },
-        }
-
-        logger = wandb.init(
-            project=WANDB_PATH.split("/")[-1],
-            name="test obqa+cos",
-            entity=WANDB_PATH.split("/")[0],
-            config=config,
-        )
-        train(logger, config)
