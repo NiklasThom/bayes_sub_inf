@@ -675,7 +675,9 @@ class SubspaceBaseModel:
 
     # @partial(jit, static_argnums=(0,), donate_argnums=(2,))
     # @partial(jit, static_argnums=(0,))
-    def _predict(self, params, state, inputs, train) -> Tuple[jnp.ndarray, dict]:
+    def _predict(
+        self, params, state, inputs, train, key=None
+    ) -> Tuple[jnp.ndarray, dict]:
         if not isinstance(inputs, tuple):
             inputs = (inputs,)
         # Predict out from inputs and parameters
@@ -683,19 +685,48 @@ class SubspaceBaseModel:
             all_params = {"params": params, self.mutable_name: state}
 
             def train_fn(inputs):
-                out, net_state = self.model.apply(
-                    all_params, *inputs, train=True, mutable=self.mutable_name
-                )
+                if key is not None:
+                    out, net_state = self.model.apply(
+                        all_params,
+                        *inputs,
+                        train=True,
+                        mutable=self.mutable_name,
+                        rngs={"dropout": key},
+                    )
+                else:
+                    out, net_state = self.model.apply(
+                        all_params, *inputs, train=True, mutable=self.mutable_name
+                    )
                 return out, net_state[self.mutable_name]
         else:
             all_params = {"params": params}
 
             def train_fn(inputs):
-                out = self.model.apply(all_params, *inputs, train=True, mutable=False)
+                if key is not None:
+                    out = self.model.apply(
+                        all_params,
+                        *inputs,
+                        train=True,
+                        mutable=False,
+                        rngs={"dropout": key},
+                    )
+                else:
+                    out = self.model.apply(
+                        all_params, *inputs, train=True, mutable=False
+                    )
                 return out, {}
 
         def eval_fn(inputs):
-            out = self.model.apply(all_params, *inputs, train=False, mutable=False)
+            if key is not None:
+                out = self.model.apply(
+                    all_params,
+                    *inputs,
+                    train=False,
+                    mutable=False,
+                    rngs={"dropout": key},
+                )
+            else:
+                out = self.model.apply(all_params, *inputs, train=False, mutable=False)
             return out, state
 
         out, net_state = jax.lax.cond(train, train_fn, eval_fn, inputs)
@@ -743,7 +774,7 @@ class SubspaceBaseModel:
             )
 
         # forward pass per sample
-        out, state = self._predict(params, state, x, train=train)
+        out, state = self._predict(params, state, x, train=train, key=key)
         return out, state
 
     # @partial(jit, static_argnums=(0,))
