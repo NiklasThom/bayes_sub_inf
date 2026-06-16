@@ -1130,16 +1130,30 @@ def _init_subspace_params(
 
     curve_mask, train_mask, lora_mask = config.build_masks(params["params"])
 
-    params = s_model.init_params_from_point(
-        init_key,
-        params,
-        curve_mask,
-        noise_fn=lambda p, key: (
-            p
-            + config.model_params.jitter_multiplier
-            * random.normal(key, p.shape, dtype=p.dtype)
-        ),
-    )
+    # Pass lora_mask conditionally for LoRA finetuning
+    if isinstance(s_model, LoRAMixin) and lora_params and lora_params.use_lora:
+        params = s_model.init_params_from_point(
+            init_key,
+            params,
+            curve_mask,
+            noise_fn=lambda p, key: (
+                p
+                + config.model_params.jitter_multiplier
+                * random.normal(key, p.shape, dtype=p.dtype)
+            ),
+            lora_mask=lora_mask,
+        )
+    else:
+        params = s_model.init_params_from_point(
+            init_key,
+            params,
+            curve_mask,
+            noise_fn=lambda p, key: (
+                p
+                + config.model_params.jitter_multiplier
+                * random.normal(key, p.shape, dtype=p.dtype)
+            ),
+        )
 
     # set train mask according to config
     # Only update mask for LoRA-capable subspaces
@@ -1261,9 +1275,11 @@ def _make_train_batch_fn(
             current_rho = rho_scheduler(update_idx, lora_rho)
             current_rho_s = rho_scheduler(update_idx, lora_rho_s)
             params = s_model.set_lora_rho(current_rho, current_rho_s, params)  # type: ignore[attr-defined]
-        t = t_sample_fn(subkey)
+        # Split subkey for t sampling and dropout to avoid correlated randomness
+        t_key, dropout_key = random.split(subkey)
+        t = t_sample_fn(t_key)
         loss, params, opt_state, (grad_, logs) = s_model.train_step(
-            subkey, t, params, x_batch, y_batch, opt_state, optimizer
+            dropout_key, t, params, x_batch, y_batch, opt_state, optimizer
         )
         current_lr = lr_schedule(update_idx)
 
@@ -1388,9 +1404,11 @@ def _make_expert_step_fn(env: "TrainingEnv", config: "Config", *, window_size):
             lambda leaf: jnp.take(leaf, idx, axis=0, mode="clip"), y_all
         )
 
-        t_val = t_sample_fn(subkey)
+        # Split subkey for t sampling and dropout to avoid correlated randomness
+        t_key, dropout_key = random.split(subkey)
+        t_val = t_sample_fn(t_key)
         loss, params, opt_state, (grad_, logs) = s_model.train_step(
-            subkey, t_val, params, x_batch, y_batch, opt_state, optimizer
+            dropout_key, t_val, params, x_batch, y_batch, opt_state, optimizer
         )
         current_lr = lr_schedule(step)
 
