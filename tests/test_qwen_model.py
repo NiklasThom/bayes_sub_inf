@@ -21,24 +21,10 @@ WANDB_PROJECT = os.environ.get("WANDB_PROJECT", "curve_optimizer")
 WANDB_PATH = f"{WANDB_ENTITY}/{WANDB_PROJECT}" if WANDB_ENTITY else "curve_optimizer"
 
 
-def test_qwen_training():
+# 1. Add defaults to the function signature.
+# Tip: Defaulting to smoke_test=True ensures pytest runs quickly!
+def test_qwen_training(batch_size=4, smoke_test=True):
     """Main entry point for Qwen curve fine-tuning."""
-    parser = argparse.ArgumentParser(
-        description="Train a single model or a curve model."
-    )
-    parser.add_argument(
-        "--batch-size",
-        type=int,
-        default=16,
-        help="batch size for training. Default is 16.",
-    )
-    parser.add_argument(
-        "--smoke-test",
-        action="store_true",
-        help="Run a quick smoke test with reduced epochs (2) and batch iterations (3).",
-    )
-
-    args = parser.parse_args()
     print("current path:", os.getcwd())
 
     config_dict = {
@@ -57,14 +43,14 @@ def test_qwen_training():
         },
         # --- Training hyperparameters → TrainHyperparams ----------------------
         "train_hyper": {
-            "batch_size": args.batch_size,
-            "num_epochs": -1,  # -1 means use num_steps instead
-            "num_steps": 10 if args.smoke_test else 10_000,
+            "batch_size": batch_size,  # Use the function argument
+            "num_epochs": -1,
+            "num_steps": 10 if smoke_test else 10_000,  # Use the function argument
             "eval_every_n_batch": 200,
             "temperature": [1.0],
             "dataset_sampling": {"minibatch": {}},
             "save_params": True,
-            "smoke_test": args.smoke_test,
+            "smoke_test": smoke_test,  # Use the function argument
         },
         # --- Subspace model + LoRA architecture → ModelParams -----------------
         "model_params": {
@@ -154,7 +140,6 @@ def test_qwen_training():
         val_percentage=config_dict["data"].get("val_percentage", 0.0),
         batch_size=config_dict["train_hyper"]["batch_size"],
         smoke_test=config_dict["train_hyper"].get("smoke_test", False),
-        # logger=logger,  # logger is needed if dataset_path is a wandb artifact reference, but in this test we use a local path
         logger=None,
     )
 
@@ -172,4 +157,24 @@ if __name__ == "__main__":
     # Add requirement for wandb core
     wandb.require("core")
     os.makedirs("tmp_files", exist_ok=True)
-    test_qwen_training()
+
+    # 2. Move argparse down here so pytest ignores it
+    parser = argparse.ArgumentParser(
+        description="Train a single model or a curve model."
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=16,
+        help="batch size for training. Default is 16.",
+    )
+    parser.add_argument(
+        "--smoke-test",
+        action="store_true",
+        help="Run a quick smoke test with reduced epochs (2) and batch iterations (3).",
+    )
+
+    args = parser.parse_args()
+
+    # Pass the parsed arguments into the function
+    test_qwen_training(batch_size=args.batch_size, smoke_test=args.smoke_test)
