@@ -673,60 +673,71 @@ class SubspaceBaseModel:
         self.curve_mask = mask
         return all_params
 
-    # @partial(jit, static_argnums=(0,), donate_argnums=(2,))
-    # @partial(jit, static_argnums=(0,))
     def _predict(
         self, params, state, inputs, train, key=None
     ) -> Tuple[jnp.ndarray, dict]:
-        if not isinstance(inputs, tuple):
-            inputs = (inputs,)
+        kwargs = {"rngs": {"dropout": key}} if key is not None else {}
         # Predict out from inputs and parameters
         if self.mutable_name:
             all_params = {"params": params, self.mutable_name: state}
 
-            def train_fn(inputs):
-                if key is not None:
+            def train_fn(inputs_inner):
+                if isinstance(inputs_inner, dict):
                     out, net_state = self.model.apply(
                         all_params,
-                        *inputs,
+                        **inputs_inner,
                         train=True,
                         mutable=self.mutable_name,
-                        rngs={"dropout": key},
+                        **kwargs,
+                    )
+                elif isinstance(inputs_inner, tuple):
+                    out, net_state = self.model.apply(
+                        all_params,
+                        *inputs_inner,
+                        train=True,
+                        mutable=self.mutable_name,
+                        **kwargs,
                     )
                 else:
                     out, net_state = self.model.apply(
-                        all_params, *inputs, train=True, mutable=self.mutable_name
+                        all_params,
+                        inputs_inner,
+                        train=True,
+                        mutable=self.mutable_name,
+                        **kwargs,
                     )
                 return out, net_state[self.mutable_name]
         else:
             all_params = {"params": params}
 
-            def train_fn(inputs):
-                if key is not None:
+            def train_fn(inputs_inner):
+                if isinstance(inputs_inner, dict):
                     out = self.model.apply(
-                        all_params,
-                        *inputs,
-                        train=True,
-                        mutable=False,
-                        rngs={"dropout": key},
+                        all_params, **inputs_inner, train=True, mutable=False, **kwargs
+                    )
+                elif isinstance(inputs_inner, tuple):
+                    out = self.model.apply(
+                        all_params, *inputs_inner, train=True, mutable=False, **kwargs
                     )
                 else:
                     out = self.model.apply(
-                        all_params, *inputs, train=True, mutable=False
+                        all_params, inputs_inner, train=True, mutable=False, **kwargs
                     )
                 return out, {}
 
-        def eval_fn(inputs):
-            if key is not None:
+        def eval_fn(inputs_inner):
+            if isinstance(inputs_inner, dict):
                 out = self.model.apply(
-                    all_params,
-                    *inputs,
-                    train=False,
-                    mutable=False,
-                    rngs={"dropout": key},
+                    all_params, **inputs_inner, train=False, mutable=False, **kwargs
+                )
+            elif isinstance(inputs_inner, tuple):
+                out = self.model.apply(
+                    all_params, *inputs_inner, train=False, mutable=False, **kwargs
                 )
             else:
-                out = self.model.apply(all_params, *inputs, train=False, mutable=False)
+                out = self.model.apply(
+                    all_params, inputs_inner, train=False, mutable=False, **kwargs
+                )
             return out, state
 
         out, net_state = jax.lax.cond(train, train_fn, eval_fn, inputs)
@@ -1598,7 +1609,11 @@ class JensenShannonNoiseMixin:
 
     def compute_loss_t(self, key, t, params, state, freezed_params, x, y):
         # x is (input_ids, attention_mask)
-        input_ids, attention_mask = x
+        input_ids = x[
+            "input_ids"
+        ]  # currently only works for qwen text classification, need to generalize for other modalities and input formats
+        attention_mask = x["attention_mask"]
+
         joind_param = jax.tree.map(
             lambda x, y, m: x if m else y,
             params,
@@ -1679,7 +1694,11 @@ class JensenShannonNoiseSamplingMixin:
 
     def compute_loss_t(self, key, t, params, state, freezed_params, x, y):
         # x is (input_ids, attention_mask)
-        input_ids, attention_mask = x
+        input_ids = x[
+            "input_ids"
+        ]  # currently only works for qwen text classification, need to generalize for other modalities and input formats
+        attention_mask = x["attention_mask"]
+
         joind_param = jax.tree.map(
             lambda x, y, m: x if m else y,
             params,
@@ -1770,7 +1789,11 @@ class JensenShannonNoiseSamplingDropoutMixin:
 
     def compute_loss_t(self, key, t, params, state, freezed_params, x, y):
         # x is (input_ids, attention_mask)
-        input_ids, attention_mask = x
+        input_ids = x[
+            "input_ids"
+        ]  # currently only works for qwen text classification, need to generalize for other modalities and input formats
+        attention_mask = x["attention_mask"]
+
         joind_param = jax.tree.map(
             lambda x, y, m: x if m else y,
             params,
