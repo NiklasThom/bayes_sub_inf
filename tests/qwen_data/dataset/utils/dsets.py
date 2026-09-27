@@ -160,6 +160,49 @@ class ClassificationDataset:
         return prompts
 
 
+
+class AgNewsDataset(ClassificationDataset):
+    """
+    AG News text classification dataset.
+    Labels are represented as target tokens 0,1,2,3.
+    """
+
+    def __init__(self, tokenizer, add_space=False, max_seq_len=128):
+        dset = load_dataset("ag_news")
+        if "validation" not in dset:
+            dset["validation"] = dset["test"]
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token or tokenizer.bos_token
+        super().__init__(
+            dset=dset,
+            tokenizer=tokenizer,
+            n_labels=4,
+            add_space=add_space,
+            numerical=True,
+            max_seq_len=max_seq_len,
+        )
+
+    def clm_collate_fn(self, batch):
+        texts = [
+            f"Classify the news article into one of the categories 0, 1, 2, or 3. Article: {x['text']} Answer:"
+            for x in batch
+        ]
+        labels = t.tensor([x["label"] for x in batch], dtype=t.long)
+        target_id = self.target_ids[labels]
+
+        toks = self.tokenizer(
+            texts,
+            padding='max_length',
+            truncation=True,
+            max_length=self.max_seq_len,
+            return_tensors="pt",
+        )
+        return toks, labels, target_id
+
+    def s2s_collate_fn(self, batch):
+        return self.clm_collate_fn(batch)
+
+
 class BoolQDataset(ClassificationDataset):
     def __init__(
         self,
@@ -1560,3 +1603,6 @@ class DollyDataset(LMDataset):
 
 
 Dolly = DollyDataset
+
+
+ag_news = AgNewsDataset

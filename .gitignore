@@ -219,3 +219,4 @@ __marimo__/
 
 wandb/
 tmp_files/
+tests/qwen_data/helper_scripts/data_store/

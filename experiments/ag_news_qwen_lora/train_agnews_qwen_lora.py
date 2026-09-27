@@ -33,7 +33,7 @@ def test_qwen_training(batch_size=4, smoke_test=True):
         "load_params_path": False,
         # --- Data --------------------------------------------------------------
         "data": {
-            "dataset_path": "tests/qwen_data/helper_scripts/data_store/datasets/text_classification/winogrande_s",
+            "dataset_path": "tests/qwen_data/helper_scripts/data_store/datasets/text_classification/ag_news",
             "val_percentage": 0.1,
         },
         # --- Base model --------------------------------------------------------------
@@ -45,7 +45,7 @@ def test_qwen_training(batch_size=4, smoke_test=True):
         "train_hyper": {
             "batch_size": batch_size,  # Use the function argument
             "num_epochs": -1,
-            "num_steps": 10 if smoke_test else 10_000,  # Use the function argument
+            "num_steps": 10 if smoke_test else args.num_steps,  # Use the function argument
             "eval_every_n_batch": 200,
             "temperature": [1.0],
             "dataset_sampling": {"minibatch": {}},
@@ -120,7 +120,7 @@ def test_qwen_training(batch_size=4, smoke_test=True):
 
     logger = wandb.init(
         project=WANDB_PROJECT,
-        name="test-qwen-training",
+        name="agnews-qwen-lora",
         entity=WANDB_ENTITY,
         config=config_dict,
     )
@@ -149,7 +149,7 @@ def test_qwen_training(batch_size=4, smoke_test=True):
     # Call generic train function
     env, params, config = train(logger, config, data)
 
-    print("Qwen training successful!")
+    print("AG News Qwen-LoRA training successful!")
     wandb.finish()
 
 
@@ -165,9 +165,11 @@ if __name__ == "__main__":
     parser.add_argument(
         "--batch-size",
         type=int,
-        default=16,
-        help="batch size for training. Default is 16.",
+        default=4,
+        help="batch size for training. Default is 4.",
     )
+    parser.add_argument("--num-steps", type=int, default=500)
+
     parser.add_argument(
         "--smoke-test",
         action="store_true",

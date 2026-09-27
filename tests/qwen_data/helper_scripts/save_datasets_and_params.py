@@ -159,7 +159,7 @@ def save_dataset_as_numpy(
         print(f"📝 Test file missing: {test_file_path}")
 
     # Initialize accelerator
-    accelerator = Accelerator()
+    accelerator = Accelerator(cpu=True)
 
     # Configure arguments
     args = Namespace()
@@ -668,6 +668,11 @@ def main():
     if args.mode in ["datasets", "all"]:
         # Dataset configurations
         datasets_config = {
+            "ag_news": {
+                "name": "ag_news",
+                "description": "AG News (4-class text classification)",
+                "max_seq_len": 128,
+            },
             "boolq": {
                 "name": "boolq",
                 "description": "Boolean Questions (True/False)",

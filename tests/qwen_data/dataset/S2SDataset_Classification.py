@@ -6,6 +6,9 @@ from dataset.utils.datasetbase import DatasetBase
 class S2SDataset_Classification(DatasetBase):
     NAME = "mcdataset"  # mutil-choice dataset
     task_info = {
+        "ag_news": {
+            "num_labels": 4,
+        },
         "winogrande_s": {
             "num_labels": 2,
         },

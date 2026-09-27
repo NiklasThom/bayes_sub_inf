@@ -15,7 +15,15 @@ dependencies = [
     "jaxopt>=0.8.5,<0.9.0",
     "scipy>=1.10.0,<2.0.0",
     "jaxlib==0.5.3",
-    "datasets>=5.0.0",
+    "datasets==2.21.0",
+    "transformers==4.44.2",
+    "huggingface-hub==0.24.7",
+    "accelerate==0.33.0",
+    "sentencepiece>=0.2.1",
+    "safetensors>=0.8.0",
+    "tokenizers>=0.19.1",
+    "einops>=0.8.2",
+    "blackjax==1.2.2",
 ]
 
 [project.optional-dependencies]
